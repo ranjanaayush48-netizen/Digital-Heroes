@@ -12,12 +12,24 @@ import dotenv from "dotenv";
 dotenv.config();
 
 // Initialize Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-  secure: true,
-});
+function ensureCloudinaryConfig() {
+  const cloud_name = (process.env.CLOUDINARY_CLOUD_NAME || "").trim();
+  const api_key = (process.env.CLOUDINARY_API_KEY || "").trim();
+  const api_secret = (process.env.CLOUDINARY_API_SECRET || "").trim();
+
+  if (cloud_name && api_key && api_secret) {
+    cloudinary.config({
+      cloud_name,
+      api_key,
+      api_secret,
+      secure: true,
+    });
+    return true;
+  }
+  return false;
+}
+
+ensureCloudinaryConfig();
 
 // Configure Multer (memory storage for easy Cloudinary upload)
 const upload = multer({ 
@@ -517,6 +529,8 @@ app.post("/api/proofs/upload", upload.single('proof') as any, async (req: any, r
       return res.status(403).json({ error: "Forbidden: You do not own this winner record" });
     }
 
+    ensureCloudinaryConfig();
+
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: "digital-heroes/winner-proofs",
@@ -530,12 +544,18 @@ app.post("/api/proofs/upload", upload.single('proof') as any, async (req: any, r
           return res.status(500).json({ error: "Failed to upload to Cloudinary" });
         }
 
+        const deliveryType = result.type || "upload";
+        const resourceType = result.resource_type || "image";
+
         await firestore.collection("winners").doc(winnerId).update({
           proofCloudinaryPublicId: result.public_id,
           proofCloudinaryMetadata: {
             format: result.format,
             version: result.version,
             secure_url: result.secure_url,
+            resource_type: resourceType,
+            type: deliveryType,
+            access_mode: result.access_mode || "authenticated",
           },
           proofFileName: req.file?.originalname,
           proofContentType: req.file?.mimetype,
@@ -544,6 +564,8 @@ app.post("/api/proofs/upload", upload.single('proof') as any, async (req: any, r
           proofSubmittedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         });
+
+        console.log(`[Cloudinary Upload] public_id: ${result.public_id} | resource_type: ${resourceType} | delivery_type: ${deliveryType} | access_mode: ${result.access_mode || 'authenticated'}`);
 
         return res.status(200).json({ success: true, publicId: result.public_id });
       }
@@ -578,28 +600,111 @@ app.get("/api/proofs/:winnerId/view", async (req: any, res) => {
     }
 
     if (!winnerData.proofCloudinaryPublicId) {
-      // Fallback if legacy proof stored
+      // Fallback if legacy base64 proof stored
       if (winnerData.proofImageData || winnerData.proofUrl) {
         return res.status(200).json({ url: winnerData.proofImageData || winnerData.proofUrl });
       }
       return res.status(404).json({ error: "No proof uploaded for this winner" });
     }
 
-    const format = winnerData.proofCloudinaryMetadata?.format || undefined;
-    const expiresAt = Math.floor(Date.now() / 1000) + 3600; // 1 hour
+    ensureCloudinaryConfig();
 
-    const signedUrl = cloudinary.url(winnerData.proofCloudinaryPublicId, {
+    const rawPublicId = winnerData.proofCloudinaryPublicId;
+    const metadata = winnerData.proofCloudinaryMetadata || {};
+    const resourceType = metadata.resource_type || "image";
+    const format = metadata.format || undefined;
+    const version = metadata.version || undefined;
+
+    // Handle public_id if format extension is already attached
+    let publicId = rawPublicId;
+    if (format && publicId.toLowerCase().endsWith(`.${format.toLowerCase()}`)) {
+      publicId = publicId.slice(0, -(format.length + 1));
+    }
+
+    // Determine candidate delivery types (e.g. upload, authenticated, private)
+    let primaryType = metadata.type;
+    if (!primaryType) {
+      if (metadata.secure_url?.includes("/image/authenticated/")) {
+        primaryType = "authenticated";
+      } else if (metadata.secure_url?.includes("/image/private/")) {
+        primaryType = "private";
+      } else {
+        primaryType = "upload";
+      }
+    }
+
+    const candidateTypes = Array.from(new Set([
+      primaryType,
+      "upload",
+      "authenticated",
+      "private"
+    ]));
+
+    let validSignedUrl: string | null = null;
+    let verifiedDeliveryType: string = primaryType;
+
+    for (const dType of candidateTypes) {
+      const candidateUrl = cloudinary.url(publicId, {
+        sign_url: true,
+        secure: true,
+        resource_type: resourceType,
+        type: dType,
+        version: version,
+        format: format,
+        expires_at: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+      });
+
+      // Safe URL representation for logging (strip signatures and query params)
+      const sanitizedUrlPath = candidateUrl
+        .replace(/\/s--[^/]+--\//, '/s--[SIG]--/')
+        .split('?')[0];
+
+      try {
+        const probeRes = await fetch(candidateUrl, {
+          method: "HEAD",
+          headers: { "User-Agent": "DigitalHeroes-ProofView/1.0" }
+        });
+
+        console.log(`[Cloudinary Proof View] public_id: ${rawPublicId} | resource_type: ${resourceType} | delivery_type: ${dType} | sanitized_url: ${sanitizedUrlPath} | HTTP status: ${probeRes.status}`);
+
+        if (probeRes.status === 200 || probeRes.status === 304) {
+          validSignedUrl = candidateUrl;
+          verifiedDeliveryType = dType;
+          break;
+        }
+      } catch (probeErr: any) {
+        console.warn(`[Cloudinary Proof View] Probe error for ${dType}:`, probeErr?.message);
+      }
+    }
+
+    if (validSignedUrl) {
+      return res.status(200).json({ 
+        url: validSignedUrl,
+        deliveryType: verifiedDeliveryType,
+        notes: winnerData.proofNotes || '' 
+      });
+    }
+
+    // Fallback: Return signed URL constructed using primaryType
+    const fallbackSignedUrl = cloudinary.url(publicId, {
       sign_url: true,
       secure: true,
-      resource_type: "image",
-      type: "authenticated",
+      resource_type: resourceType,
+      type: primaryType,
+      version: version,
       format: format,
-      expires_at: expiresAt,
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
     });
 
+    const fallbackSanitized = fallbackSignedUrl
+      .replace(/\/s--[^/]+--\//, '/s--[SIG]--/')
+      .split('?')[0];
+
+    console.log(`[Cloudinary Proof View Fallback] public_id: ${rawPublicId} | resource_type: ${resourceType} | delivery_type: ${primaryType} | sanitized_url: ${fallbackSanitized}`);
+
     return res.status(200).json({ 
-      url: signedUrl,
-      fallbackUrl: winnerData.proofCloudinaryMetadata?.secure_url || undefined,
+      url: fallbackSignedUrl,
+      deliveryType: primaryType,
       notes: winnerData.proofNotes || '' 
     });
   } catch (err: any) {

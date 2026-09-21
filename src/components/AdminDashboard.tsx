@@ -1405,6 +1405,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <img
                   src={inspectingProof.url}
                   alt={`Proof for ${inspectingProof.userName}`}
+                  referrerPolicy="no-referrer"
                   className="max-w-full max-h-[75vh] object-contain rounded-lg border border-[#223528] shadow-lg"
                   onError={(e) => {
                     console.error("Failed to render proof image via signed URL:", inspectingProof.url);
