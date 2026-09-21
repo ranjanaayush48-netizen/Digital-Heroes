@@ -20,9 +20,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onSuccess,
 }) => {
-  const { currentUser, userProfile, signInWithGoogle, completeOnboarding, logout } = useAuth();
+  const { currentUser, userProfile, signupWithEmail, loginWithEmail, completeOnboarding, logout } = useAuth();
   const [mode, setMode] = useState<'login' | 'signup'>(initialMode);
   const [step, setStep] = useState<'auth' | 'onboarding'>('auth');
+
+  // Auth form fields
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   // Onboarding form fields
   const [name, setName] = useState('');
@@ -37,6 +41,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     if (isOpen) {
       setError(null);
       setMode(initialMode);
+      setEmail('');
+      setPassword('');
       if (currentUser && !userProfile) {
         setStep('onboarding');
         setName(currentUser.displayName || '');
@@ -54,12 +60,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleGoogleSignIn = async () => {
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setError(null);
-    setLoading(true);
 
+    if (!email.trim() || !password.trim()) {
+      setError('Please provide both email and password.');
+      return;
+    }
+
+    setLoading(true);
     try {
-      const user = await signInWithGoogle();
+      let user;
+      if (mode === 'signup') {
+        user = await signupWithEmail(email.trim(), password.trim());
+      } else {
+        user = await loginWithEmail(email.trim(), password.trim());
+      }
+
       // Check if user profile already exists in Firestore
       const userDocRef = doc(db, 'users', user.uid);
       const snap = await getDoc(userDocRef);
@@ -70,19 +88,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         onClose();
       } else {
         // New user or missing charity selection: proceed to onboarding
-        setName(user.displayName || '');
         setStep('onboarding');
       }
     } catch (err: any) {
-      console.error('Google Auth Error:', err);
-      let msg = err?.message || 'Failed to sign in with Google. Please try again.';
-      if (err?.code === 'auth/popup-closed-by-user') {
-        msg = 'Sign-in window was closed before completing authentication. Please try again.';
-      } else if (err?.code === 'auth/cancelled-popup-request') {
-        msg = 'Previous sign-in request was cancelled. Please try again.';
-      } else if (err?.code === 'auth/popup-blocked') {
-        msg = 'The sign-in popup was blocked by your browser. Please allow popups for this site.';
+      console.error('Auth Error:', err);
+      let msg = 'Authentication failed. Please try again.';
+      
+      // Handle Firebase Auth errors specifically
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
+        msg = 'Invalid email or password.';
+      } else if (err.code === 'auth/email-already-in-use') {
+        msg = 'This email is already registered. Please sign in instead.';
+      } else if (err.code === 'auth/weak-password') {
+        msg = 'Password is too weak. Please use at least 6 characters.';
+      } else if (err.code === 'auth/invalid-email') {
+        msg = 'Please provide a valid email address.';
+      } else if (err.code === 'auth/network-request-failed') {
+        msg = 'Network error. Please check your connection.';
+      } else if (err.message) {
+        msg = err.message;
       }
+      
       setError(msg);
     } finally {
       setLoading(false);
@@ -161,40 +187,47 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         )}
 
-        {/* STEP 1: Google Authentication */}
+        {/* STEP 1: Email/Password Authentication */}
         {step === 'auth' && (
-          <div className="space-y-4">
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-[#bac5bd] mb-1">
+                Email Address
+              </label>
+              <input
+                id="auth-email-input"
+                type="email"
+                required
+                placeholder="name@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-3 py-2.5 bg-[#121614] border border-[#2f3d33] rounded-lg text-sm text-[#f1f5f2] placeholder-[#5d6d61] focus:outline-none focus:border-[#528d64] transition"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-[#bac5bd] mb-1">
+                Password
+              </label>
+              <input
+                id="auth-password-input"
+                type="password"
+                required
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-3 py-2.5 bg-[#121614] border border-[#2f3d33] rounded-lg text-sm text-[#f1f5f2] placeholder-[#5d6d61] focus:outline-none focus:border-[#528d64] transition"
+              />
+            </div>
+
             <button
-              id="google-signin-btn"
-              type="button"
+              id="auth-submit-btn"
+              type="submit"
               disabled={loading}
-              onClick={handleGoogleSignIn}
               className="w-full py-3 px-4 rounded-xl bg-[#233327] hover:bg-[#2c4031] active:bg-[#1e2e22] text-[#f4f7f4] font-semibold text-sm transition border border-[#3c5e44] shadow-md flex items-center justify-center gap-3 disabled:opacity-50 cursor-pointer"
             >
-              <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
-                <path
-                  fill="#4285F4"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                />
-              </svg>
-              <span>{loading ? 'Connecting to Google...' : 'Continue with Google'}</span>
+              <span>{loading ? 'Authenticating...' : mode === 'login' ? 'Sign In' : 'Create Account'}</span>
             </button>
-
-            <p className="text-[11px] text-center text-[#7e8f82]">
-              Fast, authenticated access powered by Google. No password required.
-            </p>
 
             {/* Mode switcher */}
             <div className="mt-5 pt-4 border-t border-[#233126] text-center text-xs text-[#8c9c90]">
@@ -219,12 +252,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     onClick={() => { setMode('login'); setError(null); }}
                     className="text-[#89e09f] hover:underline font-medium"
                   >
-                    Sign in with Google
+                    Sign in to your account
                   </button>
                 </span>
               )}
             </div>
-          </div>
+          </form>
         )}
 
         {/* STEP 2: Subscriber Onboarding Flow */}
@@ -238,13 +271,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </div>
                   <div className="truncate max-w-[200px]">
                     <div className="font-semibold text-[#f1f5f2] truncate">
-                      {currentUser.displayName || 'Google Member'}
+                      {currentUser.displayName || 'Subscriber'}
                     </div>
                     <div className="text-[10px] text-[#7d9082] truncate">{currentUser.email}</div>
                   </div>
                 </div>
                 <span className="text-[10px] text-emerald-400 font-mono bg-[#18291e] px-2 py-0.5 rounded border border-[#2c4733] shrink-0">
-                  Google Verified
+                  Digital Hero
                 </span>
               </div>
             )}

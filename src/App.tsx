@@ -26,7 +26,7 @@ function MainApp() {
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'signup'>('login');
 
-  // Prompt onboarding if user authenticated with Google but lacks Firestore profile
+  // Prompt onboarding if user is authenticated but lacks Firestore profile
   useEffect(() => {
     if (currentUser && !loading && !userProfile) {
       setAuthModalMode('signup');

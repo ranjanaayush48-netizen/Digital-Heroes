@@ -2,8 +2,8 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { 
   User, 
   onAuthStateChanged, 
-  GoogleAuthProvider,
-  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   signOut as fbSignOut,
   updateProfile 
 } from 'firebase/auth';
@@ -31,10 +31,9 @@ interface AuthContextType {
   loading: boolean;
   isAdmin: boolean;
   isSubscriber: boolean;
-  signInWithGoogle: () => Promise<User>;
+  signupWithEmail: (email: string, password: string) => Promise<User>;
+  loginWithEmail: (email: string, password: string) => Promise<User>;
   completeOnboarding: (name: string, charityId?: string, charityPercent?: number) => Promise<UserProfile>;
-  signup: (name: string, charityId?: string, charityPercent?: number) => Promise<UserProfile>;
-  login: () => Promise<User>;
   logout: () => Promise<void>;
   activateSubscription: (plan: SubscriptionPlan) => Promise<{ success: boolean; subscription: UserSubscription; message: string }>;
   cancelSubscription: () => Promise<{ success: boolean; subscription: UserSubscription; message: string }>;
@@ -113,12 +112,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
-  const signInWithGoogle = async (): Promise<User> => {
+  const signupWithEmail = async (email: string, password: string): Promise<User> => {
     setLoading(true);
     try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: 'select_account' });
-      const res = await signInWithPopup(auth, provider);
+      const res = await createUserWithEmailAndPassword(auth, email, password);
+      return res.user;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loginWithEmail = async (email: string, password: string): Promise<User> => {
+    setLoading(true);
+    try {
+      const res = await signInWithEmailAndPassword(auth, email, password);
       return res.user;
     } finally {
       setLoading(false);
@@ -132,7 +139,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<UserProfile> => {
     const user = auth.currentUser;
     if (!user) {
-      throw new Error('Authentication required. Please continue with Google first.');
+      throw new Error('Authentication required. Please sign in or create an account first.');
     }
 
     const email = user.email || '';
@@ -173,14 +180,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await setDoc(userDocRef, profileData, { merge: true });
     setUserProfile(profileData);
     return profileData;
-  };
-
-  const login = async (): Promise<User> => {
-    return await signInWithGoogle();
-  };
-
-  const signup = async (name: string, charityId?: string, charityPercent?: number): Promise<UserProfile> => {
-    return await completeOnboarding(name, charityId, charityPercent);
   };
 
   const logout = async () => {
@@ -255,10 +254,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       loading,
       isAdmin,
       isSubscriber,
-      signInWithGoogle,
+      signupWithEmail,
+      loginWithEmail,
       completeOnboarding,
-      signup,
-      login,
       logout,
       activateSubscription,
       cancelSubscription,

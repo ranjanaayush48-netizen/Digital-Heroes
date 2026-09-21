@@ -7,8 +7,8 @@ import {
   editScore, 
   deleteScore 
 } from '../lib/scoreService';
-import { getUserWins, updateWinnerProof } from '../lib/drawService';
-import { compressImage } from '../lib/imageUtils';
+import { getUserWins } from '../lib/drawService';
+import { uploadProof } from '../lib/proofService';
 import { 
   Award, 
   Calendar, 
@@ -174,24 +174,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setUploadingProof(true);
     setUploadError(null);
     
-    console.log('DashboardView: Starting Firestore-based proof submission flow...');
+    console.log('DashboardView: Starting Cloudinary-based proof submission flow...');
     
     try {
-      // Step 1: Client-side compression and resizing (Firestore limit is 1MB)
-      console.log('DashboardView: Compressing image for Firestore storage...');
-      const compressedBase64 = await compressImage(proofFile, 1024, 1024, 0.7);
+      // Step 1: Upload directly to our server API (which proxies to Cloudinary)
+      console.log('DashboardView: Uploading proof to secure server endpoint...');
       
-      console.log('DashboardView: Compression successful, updating winner record in Firestore...');
-      
-      // Step 2: Update Winner record in Firestore with embedded image data
-      await updateWinnerProof(selectedWinToVerify.id, {
-        imageData: compressedBase64,
-        fileName: proofFile.name,
-        contentType: proofFile.type,
+      await uploadProof({
+        winnerId: selectedWinToVerify.id,
+        file: proofFile,
         notes: proofNotes
       });
       
-      console.log('DashboardView: Winner record updated with proof data successfully');
+      console.log('DashboardView: Winner record updated with Cloudinary proof successfully');
       
       setProofSuccess(true);
       confetti();
@@ -205,10 +200,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }, 2500);
     } catch (err: any) {
       console.error('DashboardView: Fatal error in submission flow:', err);
-      setUploadError(err?.message || 'Failed to compress or save your proof. Please ensure the image is a valid photo and try again.');
+      setUploadError(err?.message || 'Failed to upload your proof. Please ensure the image is valid and try again.');
     } finally {
       setUploadingProof(false);
-      console.log('DashboardView: Proof submission flow state reset.');
     }
   };
 

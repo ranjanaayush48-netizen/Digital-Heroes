@@ -91,6 +91,8 @@ export interface WinnerRecord {
   proofStatus: 'none' | 'pending_review' | 'approved' | 'rejected' | 'Submitted';
   proofUrl?: string; // Legacy field for Storage URL
   proofImageData?: string; // Base64 data URL for Firestore-based fallback
+  proofCloudinaryPublicId?: string; // Cloudinary public_id
+  proofCloudinaryMetadata?: any; // Cloudinary metadata
   proofFileName?: string;
   proofContentType?: string;
   proofSubmittedAt?: string; // ISO date

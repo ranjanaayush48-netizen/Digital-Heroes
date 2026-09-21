@@ -5,9 +5,35 @@ import Razorpay from "razorpay";
 import crypto from "crypto";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
+import { getAuth } from "firebase-admin/auth";
+import { v2 as cloudinary } from "cloudinary";
+import multer from "multer";
 import dotenv from "dotenv";
 
 dotenv.config();
+
+// Initialize Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure: true,
+});
+
+// Configure Multer (memory storage for easy Cloudinary upload)
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+  fileFilter: (req: any, file: any, cb: any) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'));
+    }
+  }
+});
 
 // Initialize Firebase Admin safely
 if (getApps().length === 0) {
@@ -96,6 +122,20 @@ async function getOrCreatePlan(type: 'monthly' | 'yearly') {
 }
 
 app.use(express.json());
+
+// Helper to verify auth
+async function verifyAuth(req: any) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  const idToken = authHeader.split("Bearer ")[1];
+  try {
+    const decodedToken = await getAuth().verifyIdToken(idToken);
+    return decodedToken;
+  } catch (err) {
+    console.error("Auth verification failed:", err);
+    return null;
+  }
+}
 
 // API: Create Subscription
 app.post("/api/subscriptions/create", async (req, res) => {
@@ -297,7 +337,112 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  // API: Upload Winner Proof to Cloudinary
+app.post("/api/proofs/upload", upload.single('proof'), async (req: any, res) => {
+  const user = await verifyAuth(req);
+  if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+  const { winnerId, notes } = req.body;
+  if (!winnerId) return res.status(400).json({ error: "Missing winnerId" });
+
+  try {
+    const firestore = getFirestoreInstance();
+    if (!firestore) return res.status(500).json({ error: "Firestore unavailable" });
+
+    // Verify the winner record belongs to the user OR user is admin
+    const winnerDoc = await firestore.collection("winners").doc(winnerId).get();
+    if (!winnerDoc.exists) return res.status(404).json({ error: "Winner record not found" });
+    
+    const winnerData = winnerDoc.data() || {};
+    const isAdmin = user.role === 'admin' || user.email === process.env.DEFAULT_ADMIN_EMAIL;
+    if (winnerData.userId !== user.uid && !isAdmin) {
+      return res.status(403).json({ error: "Forbidden: You do not own this winner record" });
+    }
+
+    // Upload to Cloudinary
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: "digital-heroes/winner-proofs",
+        access_mode: "authenticated",
+        resource_type: "image",
+        public_id: `${winnerId}_${Date.now()}`,
+      },
+      async (error, result) => {
+        if (error || !result) {
+          console.error("Cloudinary Upload Error:", error);
+          return res.status(500).json({ error: "Failed to upload to Cloudinary" });
+        }
+
+        // Update Firestore
+        await firestore.collection("winners").doc(winnerId).update({
+          proofCloudinaryPublicId: result.public_id,
+          proofCloudinaryMetadata: {
+            format: result.format,
+            version: result.version,
+            secure_url: result.secure_url,
+          },
+          proofFileName: req.file?.originalname,
+          proofContentType: req.file?.mimetype,
+          proofNotes: notes || '',
+          proofStatus: 'Submitted',
+          proofSubmittedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+
+        res.json({ success: true, publicId: result.public_id });
+      }
+    );
+
+    stream.end(req.file.buffer);
+  } catch (err: any) {
+    console.error("Proof Upload Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get Signed URL for Proof View
+app.get("/api/proofs/:winnerId/view", async (req: any, res) => {
+  const user = await verifyAuth(req);
+  if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+  const { winnerId } = req.params;
+
+  try {
+    const firestore = getFirestoreInstance();
+    if (!firestore) return res.status(500).json({ error: "Firestore unavailable" });
+
+    const winnerDoc = await firestore.collection("winners").doc(winnerId).get();
+    if (!winnerDoc.exists) return res.status(404).json({ error: "Winner record not found" });
+
+    const winnerData = winnerDoc.data();
+    const isAdmin = user.role === 'admin' || user.email === process.env.DEFAULT_ADMIN_EMAIL;
+    if (winnerData.userId !== user.uid && !isAdmin) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    if (!winnerData.proofCloudinaryPublicId) {
+      return res.status(404).json({ error: "No proof uploaded for this winner" });
+    }
+
+    // Generate signed URL
+    const signedUrl = cloudinary.url(winnerData.proofCloudinaryPublicId, {
+      sign_url: true,
+      secure: true,
+      resource_type: "image",
+      type: "authenticated",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+    });
+
+    res.json({ url: signedUrl });
+  } catch (err: any) {
+    console.error("Proof View Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

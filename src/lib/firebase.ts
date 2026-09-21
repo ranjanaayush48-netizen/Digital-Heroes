@@ -1,7 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, connectAuthEmulator } from 'firebase/auth';
 import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
 import config from '../../firebase-applet-config.json';
 
 const firebaseConfig = {
@@ -23,6 +22,3 @@ export const auth = getAuth(app);
 export const db = config.firestoreDatabaseId 
   ? getFirestore(app, config.firestoreDatabaseId)
   : getFirestore(app);
-
-// Initialize Firebase Storage
-export const storage = getStorage(app);

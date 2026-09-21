@@ -414,26 +414,6 @@ export const getUserWins = async (userId: string) => {
   return wins;
 };
 
-export const updateWinnerProof = async (
-  winnerId: string, 
-  proofData: {
-    imageData: string;
-    fileName: string;
-    contentType: string;
-    notes?: string;
-  }
-) => {
-  await updateDoc(doc(db, 'winners', winnerId), {
-    proofImageData: proofData.imageData,
-    proofFileName: proofData.fileName,
-    proofContentType: proofData.contentType,
-    proofNotes: proofData.notes || '',
-    proofStatus: 'Submitted', // PRD requirement: status = "Submitted"
-    proofSubmittedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  });
-};
-
 // Simplified review function to handle all submission statuses
 export const reviewWinnerProof = async (winnerId: string, status: 'approved' | 'rejected', adminNotes?: string) => {
   await updateDoc(doc(db, 'winners', winnerId), {

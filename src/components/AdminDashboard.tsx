@@ -25,6 +25,7 @@ import {
   reviewWinnerProof, 
   markWinnerPayout 
 } from '../lib/drawService';
+import { getProofSignedUrl } from '../lib/proofService';
 import { createCharity, updateCharity, deleteCharity } from '../lib/charityService';
 import { 
   Users, 
@@ -998,14 +999,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <div className="text-[11px] text-[#8e9f92] mt-1">
                         Draw: {win.drawTitle || win.drawMonth} · Matched Numbers: [{win.matchedNumbers?.join(', ')}]
                       </div>
-                      {win.proofImageData || win.proofUrl ? (
+                      {win.proofCloudinaryPublicId || win.proofImageData || win.proofUrl ? (
                         <div className="mt-2 flex items-center gap-2">
                           <button
-                            onClick={() => {
-                              const imgWin = window.open('', '_blank');
-                              if (imgWin) {
-                                imgWin.document.write(`<img src="${win.proofImageData || win.proofUrl}" style="max-width: 100%; height: auto;" />`);
-                                imgWin.document.title = `Proof: ${win.userName}`;
+                            onClick={async () => {
+                              try {
+                                let url = win.proofImageData || win.proofUrl;
+                                
+                                // If it's a Cloudinary proof, we MUST get a signed URL from server
+                                if (win.proofCloudinaryPublicId) {
+                                  url = await getProofSignedUrl(win.id);
+                                }
+
+                                if (!url) {
+                                  alert("No proof image data available.");
+                                  return;
+                                }
+
+                                const imgWin = window.open('', '_blank');
+                                if (imgWin) {
+                                  imgWin.document.write(`
+                                    <html>
+                                      <head><title>Proof for ${win.userName}</title></head>
+                                      <body style="margin:0; display:flex; justify-content:center; align-items:center; background:#0a0d0b;">
+                                        <img src="${url}" style="max-width: 100%; max-height: 100vh; object-fit: contain;" />
+                                      </body>
+                                    </html>
+                                  `);
+                                  imgWin.document.close();
+                                }
+                              } catch (err: any) {
+                                alert("Failed to load proof: " + (err?.message || "Unknown error"));
                               }
                             }}
                             className="text-xs text-[#8ce2a3] hover:underline flex items-center gap-1"
