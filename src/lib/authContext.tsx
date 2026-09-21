@@ -50,9 +50,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [userSubscription, setUserSubscription] = useState<UserSubscription | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Seed default charities into Firestore if empty
+  const isAdmin = userProfile?.role === 'admin' || 
+    currentUser?.email?.toLowerCase() === 'admin@digitalheroes.co.in' || 
+    currentUser?.email?.toLowerCase() === 'ranjanaayush48@gmail.com';
+  const isSubscriber = userProfile?.subscriptionStatus === 'active';
+
+  // Seed default charities into Firestore if empty - ONLY for admins
   useEffect(() => {
     const seedCharities = async () => {
+      // Only attempt to seed if we are authenticated and confirmed as an admin
+      if (!currentUser || !isAdmin) return;
+      
       try {
         const charitySnap = await getDocs(collection(db, 'charities'));
         if (charitySnap.empty) {
@@ -65,7 +73,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
     seedCharities();
-  }, []);
+  }, [currentUser, isAdmin]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -240,11 +248,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updatedAt: new Date().toISOString()
     });
   };
-
-  const isAdmin = userProfile?.role === 'admin' || 
-    currentUser?.email?.toLowerCase() === 'admin@digitalheroes.co.in' || 
-    currentUser?.email?.toLowerCase() === 'ranjanaayush48@gmail.com';
-  const isSubscriber = userProfile?.subscriptionStatus === 'active';
 
   return (
     <AuthContext.Provider value={{
