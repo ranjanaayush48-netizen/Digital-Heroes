@@ -34,29 +34,59 @@ const upload = multer({
   }
 });
 
+// Project constants
+const DEFAULT_FIREBASE_PROJECT_ID = "digital-heroes-af8a9";
+
 // Initialize Firebase Admin safely with support for Service Account credentials
-if (getApps().length === 0) {
+function initFirebaseAdmin() {
+  if (getApps().length > 0) {
+    return getApps()[0];
+  }
+
+  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID;
+
   try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      const sa = typeof process.env.FIREBASE_SERVICE_ACCOUNT === 'string'
-        ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-        : process.env.FIREBASE_SERVICE_ACCOUNT;
-      initializeApp({ credential: cert(sa) });
+      let sa = process.env.FIREBASE_SERVICE_ACCOUNT;
+      if (typeof sa === 'string') {
+        try {
+          sa = JSON.parse(sa);
+        } catch {
+          // If base64 encoded, decode it
+          try {
+            sa = JSON.parse(Buffer.from(sa, 'base64').toString('utf8'));
+          } catch (e) {
+            console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT as JSON or base64 JSON");
+          }
+        }
+      }
+      return initializeApp({
+        credential: cert(sa),
+        projectId: (sa as any)?.project_id || projectId,
+      });
     } else if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
-      initializeApp({
+      return initializeApp({
         credential: cert({
-          projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID,
+          projectId,
           clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
           privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
         }),
+        projectId,
       });
     } else {
-      initializeApp();
+      // Initialize with explicit projectId fallback
+      return initializeApp({
+        projectId,
+      });
     }
   } catch (err: any) {
-    console.error("Firebase Admin initialization failed. Continuing without it...", err?.message || err);
+    console.error("Firebase Admin initialization error:", err?.message || err);
+    return null;
   }
 }
+
+// Initial initialization attempt
+initFirebaseAdmin();
 
 export const app = express();
 const PORT = 3000;
@@ -66,6 +96,9 @@ let firestoreInstance: any = null;
 function getFirestoreInstance() {
   if (!firestoreInstance) {
     try {
+      if (getApps().length === 0) {
+        initFirebaseAdmin();
+      }
       firestoreInstance = getFirestore();
     } catch (err: any) {
       console.error("Firestore initialization failed:", err?.message || err);
