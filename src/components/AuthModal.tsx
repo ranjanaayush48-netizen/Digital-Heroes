@@ -130,9 +130,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setLoading(true);
     try {
-      console.log('[AUTH_MODAL] Submitting onboarding registration...');
       await completeOnboarding(name.trim(), selectedCharity, charityPercent);
-      console.log('[AUTH_MODAL] completeOnboarding succeeded, executing onSuccess & onClose');
       onSuccess();
       onClose();
     } catch (err: any) {

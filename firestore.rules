@@ -19,20 +19,23 @@ service cloud.firestore {
 
     // Users Collection
     match /users/{userId} {
-      allow read: if request.auth != null;
+      // Authenticated users may read their own profile; admins can read any user profile
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
 
       // A newly authenticated user can create ONLY their own profile.
       allow create: if request.auth != null
                     && request.auth.uid == userId;
 
       // A user can update ONLY their own profile.
-      // Prevent users from changing an existing role field.
-      allow update: if request.auth != null
-                    && request.auth.uid == userId
-                    && (
-                      !('role' in resource.data)
-                      || request.resource.data.role == resource.data.role
-                    );
+      // Prevent normal users from changing an existing role field. Admins retain full update access.
+      allow update: if (
+                      request.auth != null
+                      && request.auth.uid == userId
+                      && (
+                        !('role' in resource.data)
+                        || request.resource.data.role == resource.data.role
+                      )
+                    ) || isAdmin();
 
       allow delete: if isAdmin();
 
