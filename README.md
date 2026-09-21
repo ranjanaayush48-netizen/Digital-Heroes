@@ -1,129 +1,563 @@
-# Digital Heroes · Production Web Platform
+Digital Heroes
 
-**Author:** Ayush Ranjan  
-**Edition:** 2026 PRD Level 1 Implementation  
-**Domain:** digitalheroes.co.in
+A production-oriented full-stack web platform that combines golf performance tracking, charitable giving, subscription management, and monthly prize draws.
 
----
+Overview
 
-## 1. Product Overview
+Digital Heroes is designed around a simple idea: users track their golf performance, choose a charity and contribution percentage, participate through an active subscription, and become eligible for monthly prize draws.
 
-**Digital Heroes** is a subscription-driven golf performance, charity, and monthly prize-draw platform. Public visitors can understand the platform, explore verified charity partners, inspect draw mechanics, and subscribe. Registered subscribers manage their profile, subscriptions, 5-score rolling Stableford golf scores, chosen charity allocations, draw participation, and winnings. Administrators control users, subscriptions, scores, charities, draws, winners, payouts, and analytics.
+The platform provides separate experiences for subscribers and administrators, with the core business logic handled through a React frontend, Node.js/Express backend, Firebase services, Razorpay subscriptions, and Cloudinary for secure winner-proof storage.
 
-The visual direction strictly follows the PRD mandate: **"Feel, not fairway."** It rejects dated golf clichés (plaid, excessive clubs, fairways) in favor of a warm, modern architectural palette (warm off-white, charcoal, deep green, restrained neutral tones) centered on charitable impact, community excitement, and verified results.
+Live Application
 
----
+Live Website:
+https://digital-heroes-502dxqlit-alone-5a85.vercel.app/
 
-## 2. Tech Stack
+Source Code
 
-- **Frontend:** React 19, TypeScript, Vite, Tailwind CSS v4, Motion, Lucide Icons, Canvas-Confetti
-- **Backend & Persistence:** Node.js + Express + TypeScript, Cloud Firestore, Firebase Authentication, Firebase Storage
-- **Payments:** Stripe test mode subscription & checkout workflow
-- **Deployment:** Vercel compatible architecture (`vercel.json` and client SPA static routing)
+GitHub Repository:
+https://github.com/ranjanaayush48-netizen/Digital-Heroes
 
----
+Key Features
 
-## 3. Core Architecture & Modules
+Subscriber
 
-### 1. Score Management Engine (PRD § 05)
-- Stableford scores strictly bounded between **1 and 45**.
-- Date is required; only **one score is permitted per date** (duplicates on the same date are rejected with an edit or delete prompt).
-- **Maximum 5 scores retained at any time**. When a 6th score is added, the oldest stored score is automatically pruned using an atomic batch.
-- Displayed in **reverse chronological order** (most recent first).
+Email/password authentication
 
-### 2. Charity Allocation Engine (PRD § 08)
-- Every subscriber designates a charity partner during signup or from their dashboard.
-- **Mandatory 10% minimum contribution** automatically calculated from subscription dues.
-- Voluntary slider allowing subscribers to increase contribution up to **50%**.
-- **Independent donation option** allowing one-off philanthropic gifts not tied to gameplay.
-- Admin CRUD surface for charities, media banners, and upcoming golf day events.
+Subscriber onboarding
 
-### 3. Draw & Prize Engine (PRD § 06 & § 07)
-- Monthly draws with deterministic server-side calculations.
-- Configurable subscription allocation (default $10 per active subscriber).
-- Prize pool distribution:
-  - **5-Number match (Jackpot):** 40% of pool (+ full rollover if unclaimed)
-  - **4-Number match:** 35% of pool
-  - **3-Number match:** 25% of pool
-- Each tier is split equally among multiple winners.
-- Unclaimed 5-number jackpot **rolls over indefinitely**.
-- Selection methods:
-  - **Random:** Standard lottery pseudo-random generator with uniform distribution (1–45).
-  - **Algorithmic:** Weighted selection based on member score frequency with Laplace smoothing.
-- **Simulation before publishing:** Administrators inspect simulated winners, payouts, and rollover amounts before officially publishing.
+Monthly and yearly subscription options
 
-### 4. Winner Verification & Payout Pipeline (PRD § 09)
-- Winners can upload scorecard screenshots or club handicap verification.
-- Stored securely in Firebase Storage with data URI fallback.
-- Administrators review submissions (`pending_review` → `approved` / `rejected`).
-- Payout state lifecycle: `Pending` → `Paid`.
+Subscription status tracking
 
----
+Golf score entry and editing
 
-## 4. Firestore Data Model
+Stableford score validation from 1–45
 
-```
-├── users/{userId}
-│   ├── uid, email, displayName, role ('subscriber' | 'admin')
-│   ├── subscriptionStatus ('active' | 'inactive' | 'cancelled' | 'lapsed')
-│   ├── subscriptionPlan ('monthly' | 'yearly')
-│   ├── subscriptionRenewalDate
-│   ├── selectedCharityId
-│   ├── charityContributionPercent (>= 10)
-│   └── scores/{scoreId}
-│       ├── score (1-45), date (YYYY-MM-DD, unique per date), courseName, notes
-│
-├── charities/{charityId}
-│   ├── name, category, tagline, description, mission, imageUrl, featured
-│   ├── totalRaised, supporterCount, upcomingEvents[]
-│
-├── draws/{drawId}
-│   ├── month (YYYY-MM), title, drawDate, status ('simulated' | 'published')
-│   ├── drawMethod ('random' | 'algorithmic')
-│   ├── winningNumbers (5 numbers, 1-45)
-│   ├── activeSubscribersCount, totalPrizePool
-│   ├── jackpotRolloverIn, jackpotRolloverOut
-│   └── tiers (fiveMatch, fourMatch, threeMatch)
-│
-├── winners/{winnerId}
-│   ├── userId, userName, userEmail, matchType, matchedNumbers
-│   ├── prizeShareAmount, proofStatus, proofUrl, proofNotes, paymentStatus
-│
-└── donations/{donationId}
-    ├── charityId, charityName, amount, donorName, donorEmail, message
-```
+One score per date
 
----
+Automatic rolling five-score history
 
-## 5. Security & Authorization
+Charity selection
 
-1. **Role-Based Access Control (RBAC):** Admin operations (running draws, modifying charities, approving payouts) are strictly guarded both in client UI state and inside `firestore.rules`.
-2. **Server-Side Determinism:** Winning number generation, pool calculations, and rollover transfers are audited and calculated server-side.
-3. **Sensitive Key Safety:** Firebase API keys and Stripe keys are managed through `.env` and runtime configs without client exposure of admin secrets.
+Configurable charity contribution percentage
 
----
+Monthly draw participation
 
-## 6. Evaluation & Test Credentials
+Winner status and prize information
 
-For easy evaluator testing, the application includes one-click quick-fill buttons in the sign-in modal and navigation bar:
+Winner proof upload
 
-- **Administrator Demo Account:**
-  - Email: `admin@digitalheroes.co.in`
-  - Password: `HeroAdmin2026!`
-  - Access: Full admin portal, draw simulator, charity CRUD, payout overrides.
-- **Subscriber Demo Account:**
-  - Email: `subscriber@digitalheroes.co.in`
-  - Password: `HeroSubscriber2026!`
-  - Access: Subscriber dashboard, Stableford score logging, charity selector.
+Proof review status
 
----
+Payment status tracking
 
-## 7. Known Assumptions & PRD Clarifications
+Monthly Prize Draw
 
-- **Configurable Subscription Allocation:** PRD § 06 states *"Do not invent an undocumented prize-pool percentage; make the unspecified fixed subscription allocation configurable"*. We implemented an explicit configurable variable `allocationPerSub` (default $10/subscriber/month) in the draw simulation engine.
-- **Storage Resilience:** Direct upload to Firebase Storage is implemented with an inline data URI fallback so evaluation environments without provisioned remote storage buckets remain completely functional.
-- **Jackpot Rollover:** Unclaimed 5-match jackpot pool rolls over to the next month's total available 5-match pool, matching PRD § 06 and § 07 specifications.
+Monthly draw configuration
 
----
+Random draw generation
 
-**Built with pride by Ayush Ranjan.**
+Score-frequency-weighted draw option
+
+Prize pool calculation based on active subscriptions
+
+Three matching tiers:
+
+5-number match
+
+4-number match
+
+3-number match
+
+Prize distribution:
+
+40% for 5-number matches
+
+35% for 4-number matches
+
+25% for 3-number matches
+
+Equal prize splitting between multiple winners
+
+5-number jackpot rollover when unclaimed
+
+Admin simulation before publishing
+
+Published draw records are protected from duplicate publication
+
+Winner Verification
+
+Winner proof upload
+
+Secure Cloudinary storage
+
+Admin proof review
+
+Approve/reject workflow
+
+Payment status workflow:
+
+Pending
+
+Paid
+
+Rejected proofs can be resubmitted by the subscriber
+
+Secure signed URLs for proof viewing
+
+Admin Dashboard
+
+User management
+
+Subscription overview
+
+Score management
+
+Charity management
+
+Draw configuration
+
+Draw simulation
+
+Draw publishing
+
+Winner verification
+
+Payout management
+
+Analytics
+
+Technology Stack
+
+Frontend
+
+React
+
+TypeScript
+
+Vite
+
+Tailwind CSS
+
+Framer Motion
+
+Backend
+
+Node.js
+
+Express.js
+
+TypeScript
+
+Authentication & Database
+
+Firebase Authentication
+
+Firebase Firestore
+
+Payments
+
+Razorpay
+
+Recurring monthly/yearly subscriptions
+
+Webhook-based subscription lifecycle synchronization
+
+File Storage
+
+Cloudinary
+
+Secure winner-proof uploads
+
+Signed proof-view URLs
+
+Deployment
+
+Vercel
+
+GitHub
+
+Architecture
+
+                         ┌──────────────────────┐
+                         │       Vercel         │
+                         │  React + Vite App    │
+                         └──────────┬───────────┘
+                                    │
+                         API Requests / Auth
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │ Node.js + Express    │
+                         │      Backend         │
+                         └───────┬──────┬───────┘
+                                 │      │
+              ┌──────────────────┘      └──────────────────┐
+              ▼                                             ▼
+     ┌─────────────────┐                           ┌─────────────────┐
+     │ Firebase Admin  │                           │   Cloudinary    │
+     │ Auth + Firestore│                           │ Winner Proofs   │
+     └─────────────────┘                           └─────────────────┘
+              ▲
+              │
+              │
+     ┌────────┴────────┐
+     │    Firebase     │
+     │ Authentication  │
+     └─────────────────┘
+
+                         ┌──────────────────────┐
+                         │      Razorpay        │
+                         │ Subscription + Webhook│
+                         └──────────────────────┘
+
+Project Structure
+
+Digital-Heroes/
+├── components/
+├── services/
+├── server/
+│   ├── routes/
+│   ├── services/
+│   └── ...
+├── public/
+├── App.tsx
+├── index.html
+├── package.json
+├── tsconfig.json
+├── vite.config.ts
+└── README.md
+
+The exact folder structure may evolve as the project is maintained.
+
+Core Business Rules
+
+Golf Scores
+
+Valid Stableford score range: 1–45
+
+A user can have only one score for a particular date.
+
+Editing a score for an existing date updates that score.
+
+Only the latest five scores are retained.
+
+When a sixth score is added, the oldest score is automatically removed.
+
+Scores are displayed in reverse chronological order.
+
+Charity
+
+Users select a charity during onboarding.
+
+The contribution percentage starts at a minimum of 10%.
+
+Users can voluntarily increase their contribution.
+
+Charity contribution is maintained independently from gameplay results.
+
+Prize Distribution
+
+The prize pool is distributed across the matching tiers:
+
+Match
+
+Prize Pool Allocation
+
+5 numbers
+
+40%
+
+4 numbers
+
+35%
+
+3 numbers
+
+25%
+
+If multiple users win the same tier, the prize allocated to that tier is divided equally among the winners.
+
+An unclaimed 5-number jackpot rolls over to the following draw.
+
+Subscription Flow
+
+User
+  │
+  ▼
+Select Monthly / Yearly Plan
+  │
+  ▼
+Razorpay Checkout
+  │
+  ▼
+Payment / Subscription
+  │
+  ▼
+Razorpay Webhook
+  │
+  ▼
+Backend Verification
+  │
+  ▼
+Firestore Subscription Status
+  │
+  ▼
+Subscriber Access
+
+Subscription lifecycle events are handled through the backend, including activation, successful charges, cancellation, halting, and expiration.
+
+Draw Flow
+
+Configure Draw
+      │
+      ▼
+Generate / Simulate Draw
+      │
+      ▼
+Calculate Matching Winners
+      │
+      ▼
+Calculate Prize Distribution
+      │
+      ▼
+Admin Reviews Simulation
+      │
+      ▼
+Publish Official Draw
+      │
+      ▼
+Create Winner Records
+      │
+      ▼
+Winner Verification
+      │
+      ▼
+Payout Status
+
+Published draws use deterministic identifiers and transactional protection to prevent duplicate publication.
+
+Winner Proof Security
+
+Winner proof files are not exposed as permanent public file URLs.
+
+The application:
+
+Authenticates the requesting user.
+
+Verifies the Firebase ID token on the backend.
+
+Checks whether the user is authorized to access the proof.
+
+Generates a temporary signed Cloudinary URL.
+
+Returns the secure URL to the authorized client.
+
+This prevents unrestricted access to uploaded winner documents.
+
+Environment Variables
+
+Environment variables are required for Firebase, Razorpay, and Cloudinary integration.
+
+Example structure:
+
+# Firebase
+FIREBASE_PROJECT_ID=
+FIREBASE_CLIENT_EMAIL=
+FIREBASE_PRIVATE_KEY=
+
+# Razorpay
+VITE_RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+RAZORPAY_WEBHOOK_SECRET=
+
+# Cloudinary
+CLOUDINARY_CLOUD_NAME=
+CLOUDINARY_API_KEY=
+CLOUDINARY_API_SECRET=
+
+Never commit real credentials, private keys, API secrets, or webhook secrets to GitHub.
+
+A .env file should remain local and be included in .gitignore.
+
+Local Development
+
+1. Clone the repository
+
+git clone https://github.com/ranjanaayush48-netizen/Digital-Heroes.git
+cd Digital-Heroes
+
+2. Install dependencies
+
+npm install
+
+3. Configure environment variables
+
+Create the required environment variables using your local .env configuration.
+
+4. Start the development server
+
+npm run dev
+
+5. Build for production
+
+npm run build
+
+6. Type-check the project
+
+npx tsc --noEmit
+
+Testing & Verification
+
+The application was tested across the main subscriber and administrator workflows.
+
+Authentication
+
+User registration/login
+
+Subscriber access
+
+Administrator access
+
+Authentication-protected routes and API requests
+
+Scores
+
+Valid score submission
+
+Invalid score rejection
+
+Duplicate-date update
+
+Five-score rolling limit
+
+Reverse chronological ordering
+
+Subscriptions
+
+Monthly subscription
+
+Yearly subscription
+
+Razorpay checkout
+
+Subscription status synchronization
+
+Cancellation lifecycle
+
+Draw System
+
+Draw simulation
+
+Random draw generation
+
+Score-frequency-weighted draw
+
+Prize pool calculation
+
+Winner generation
+
+Official draw publishing
+
+Duplicate publication protection
+
+Jackpot rollover
+
+Winner Workflow
+
+Proof upload
+
+Admin proof review
+
+Proof approval
+
+Proof rejection
+
+Proof resubmission
+
+Payment status update
+
+Build Verification
+
+The project was type-checked and production-built during development to verify the application compiles successfully.
+
+Security Considerations
+
+Firebase Authentication is used for user identity.
+
+Backend APIs verify Firebase ID tokens.
+
+Admin functionality is role-restricted.
+
+Sensitive payment operations are handled server-side.
+
+Razorpay webhook signatures are verified.
+
+Cloudinary proof files are accessed through signed URLs.
+
+Secrets are stored in environment variables rather than source code.
+
+Firestore access is protected through application authorization and security rules.
+
+Draw publication uses transactional protection to prevent duplicate official results.
+
+Design Approach
+
+The interface follows an editorial, modern visual direction built around:
+
+Warm off-white surfaces
+
+Deep green accents
+
+Charcoal typography
+
+Clean cards and spacing
+
+Subtle motion
+
+Responsive layouts
+
+The design intentionally avoids traditional golf clichés such as heavy golf-course imagery, plaid patterns, and club-focused visuals. The emphasis is placed on community, charity, participation, and performance.
+
+Deployment
+
+The frontend and production application are deployed through Vercel.
+
+The project is connected to GitHub for source control and deployment workflow.
+
+Before sharing the production URL, verify that the Vercel deployment is publicly accessible and does not require Vercel account authentication.
+
+Project Purpose
+
+Digital Heroes was developed as a full-stack implementation of the provided Digital Heroes product requirements, with emphasis on:
+
+Requirements interpretation
+
+Data modelling
+
+Subscription management
+
+Secure API design
+
+Draw and prize calculation
+
+Charity contribution management
+
+Winner verification
+
+Admin workflows
+
+Production deployment
+
+Author
+
+Ayush Ranjan
+
+B.Tech — Cloud Computing & Automation
+
+GitHub:
+https://github.com/ranjanaayush48-netizen
+
+Portfolio:
+https://ayush-ranjan-portfolio-1.ai.studio/
