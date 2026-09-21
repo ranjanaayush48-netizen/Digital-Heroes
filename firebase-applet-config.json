@@ -1,12 +1,12 @@
 {
-  "projectId": "stoked-anagram-tlxdt",
-  "appId": "1:410753148145:web:9162869f06ea4695d2f550",
-  "apiKey": "AIzaSyBv6t3098hdWsy6DnGNrZpl9lpT3jfI3Z8",
-  "authDomain": "stoked-anagram-tlxdt.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-1276fc79-9098-4ebe-9429-2955efac7d52",
-  "storageBucket": "stoked-anagram-tlxdt.firebasestorage.app",
-  "messagingSenderId": "410753148145",
+  "projectId": "digital-heroes-af8a9",
+  "appId": "",
+  "apiKey": "",
+  "authDomain": "digital-heroes-af8a9.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "digital-heroes-af8a9.firebasestorage.app",
+  "messagingSenderId": "",
   "measurementId": "",
-  "oAuthClientId": "410753148145-73idpcp9i3b1kvnr5lf8ubjomdl9kfeg.apps.googleusercontent.com",
+  "oAuthClientId": "",
   "recaptchaSiteKey": ""
 }
