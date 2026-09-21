@@ -37,50 +37,100 @@ const upload = multer({
 // Project constants
 const DEFAULT_FIREBASE_PROJECT_ID = "digital-heroes-af8a9";
 
+// Diagnostic and Firebase Admin app holder
+let adminApp: any = null;
+let firestoreInstance: any = null;
+let lastAdminInitError: { message: string; code?: string } | null = null;
+
 // Initialize Firebase Admin safely with support for Service Account credentials
 function initFirebaseAdmin() {
   if (getApps().length > 0) {
-    return getApps()[0];
+    adminApp = getApps()[0];
+    return adminApp;
   }
 
+  const hasServiceAccount = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT);
+  const hasPrivateKey = Boolean(process.env.FIREBASE_PRIVATE_KEY);
+  const hasClientEmail = Boolean(process.env.FIREBASE_CLIENT_EMAIL);
   const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID;
 
+  console.log(`[Firebase Admin Diagnostics] Checking credentials - hasServiceAccount: ${hasServiceAccount}, hasPrivateKey: ${hasPrivateKey}, hasClientEmail: ${hasClientEmail}, targetProjectId: ${projectId}`);
+
   try {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      let sa = process.env.FIREBASE_SERVICE_ACCOUNT;
-      if (typeof sa === 'string') {
+    if (hasServiceAccount) {
+      let rawSa = process.env.FIREBASE_SERVICE_ACCOUNT || '';
+      let sa: any = null;
+
+      if (typeof rawSa === 'object') {
+        sa = rawSa;
+      } else {
+        // Try direct JSON parse first
         try {
-          sa = JSON.parse(sa);
+          sa = JSON.parse(rawSa);
         } catch {
-          // If base64 encoded, decode it
+          // If JSON parse fails, check if base64 encoded
           try {
-            sa = JSON.parse(Buffer.from(sa, 'base64').toString('utf8'));
-          } catch (e) {
-            console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT as JSON or base64 JSON");
+            const decoded = Buffer.from(rawSa, 'base64').toString('utf8');
+            sa = JSON.parse(decoded);
+          } catch {
+            // Also try unescaping newlines if it was pasted as an escaped string
+            try {
+              const unescaped = rawSa.replace(/\\n/g, '\n');
+              sa = JSON.parse(unescaped);
+            } catch (parseErr: any) {
+              console.error("[Firebase Admin Diagnostics] Failed to parse FIREBASE_SERVICE_ACCOUNT:", parseErr?.message || parseErr);
+              throw new Error(`FIREBASE_SERVICE_ACCOUNT format error: ${parseErr?.message || 'Invalid JSON'}`);
+            }
           }
         }
       }
-      return initializeApp({
+
+      const saProjectId = sa?.project_id || projectId;
+      console.log(`[Firebase Admin Diagnostics] Initializing with service account object for projectId: ${saProjectId}`);
+
+      // If private_key has literal escaped newlines \n, normalize them
+      if (sa && typeof sa.private_key === 'string' && sa.private_key.includes('\\n')) {
+        sa.private_key = sa.private_key.replace(/\\n/g, '\n');
+      }
+
+      adminApp = initializeApp({
         credential: cert(sa),
-        projectId: (sa as any)?.project_id || projectId,
+        projectId: saProjectId,
       });
-    } else if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
-      return initializeApp({
+
+      console.log(`[Firebase Admin Diagnostics] Successfully initialized Firebase Admin app for project: ${saProjectId}`);
+      lastAdminInitError = null;
+      return adminApp;
+    } else if (hasPrivateKey && hasClientEmail) {
+      console.log(`[Firebase Admin Diagnostics] Initializing with FIREBASE_PRIVATE_KEY and FIREBASE_CLIENT_EMAIL for projectId: ${projectId}`);
+      const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+      
+      adminApp = initializeApp({
         credential: cert({
           projectId,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
+          privateKey,
         }),
         projectId,
       });
+
+      console.log(`[Firebase Admin Diagnostics] Successfully initialized Firebase Admin app via key credentials`);
+      lastAdminInitError = null;
+      return adminApp;
     } else {
-      // Initialize with explicit projectId fallback
-      return initializeApp({
+      console.log(`[Firebase Admin Diagnostics] Initializing with default application credentials for projectId: ${projectId}`);
+      adminApp = initializeApp({
         projectId,
       });
+      console.log(`[Firebase Admin Diagnostics] Initialized Firebase Admin with default credentials`);
+      lastAdminInitError = null;
+      return adminApp;
     }
   } catch (err: any) {
-    console.error("Firebase Admin initialization error:", err?.message || err);
+    const errMsg = err?.message || String(err);
+    const errCode = err?.code || err?.errorInfo?.code;
+    lastAdminInitError = { message: errMsg, code: errCode };
+    console.error(`[Firebase Admin Diagnostics] Firebase Admin initialization failed - code: ${errCode || 'N/A'}, message: ${errMsg}`);
     return null;
   }
 }
@@ -92,20 +142,29 @@ export const app = express();
 const PORT = 3000;
 
 // Lazy Firestore initialization
-let firestoreInstance: any = null;
 function getFirestoreInstance() {
-  if (!firestoreInstance) {
-    try {
-      if (getApps().length === 0) {
-        initFirebaseAdmin();
-      }
-      firestoreInstance = getFirestore();
-    } catch (err: any) {
-      console.error("Firestore initialization failed:", err?.message || err);
+  if (firestoreInstance) {
+    return firestoreInstance;
+  }
+
+  try {
+    const existingApps = getApps();
+    const currentApp = existingApps.length > 0 ? existingApps[0] : initFirebaseAdmin();
+
+    if (!currentApp) {
+      console.error("[Firebase Admin Diagnostics] No initialized Firebase Admin app found when requesting Firestore instance. Last error:", lastAdminInitError);
       return null;
     }
+
+    firestoreInstance = getFirestore(currentApp);
+    console.log("[Firebase Admin Diagnostics] Successfully acquired Firestore instance from active app");
+    return firestoreInstance;
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    const errCode = err?.code || err?.errorInfo?.code;
+    console.error(`[Firebase Admin Diagnostics] Firestore instance acquisition failed - code: ${errCode || 'N/A'}, message: ${errMsg}`);
+    return null;
   }
-  return firestoreInstance;
 }
 
 // Lazy Razorpay initialization to prevent startup crash if keys are missing
