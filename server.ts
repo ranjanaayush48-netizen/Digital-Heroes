@@ -42,6 +42,24 @@ let adminApp: any = null;
 let firestoreInstance: any = null;
 let lastAdminInitError: { message: string; code?: string; details?: string } | null = null;
 
+// Helper function to safely format and clean the PEM private key
+function formatPrivateKey(key: string): string {
+  let cleaned = key.trim();
+  
+  // Safely remove surrounding double or single quotes if present (e.g. from env file copy-paste)
+  if (
+    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+    (cleaned.startsWith("'") && cleaned.endsWith("'"))
+  ) {
+    cleaned = cleaned.slice(1, -1);
+  }
+
+  // Convert literal string escaped newlines "\n" or "\\n" to real newline characters
+  cleaned = cleaned.replace(/\\n/g, '\n');
+
+  return cleaned;
+}
+
 // Initialize Firebase Admin safely with support for Service Account credentials
 function initFirebaseAdmin() {
   if (getApps().length > 0) {
@@ -49,88 +67,57 @@ function initFirebaseAdmin() {
     return adminApp;
   }
 
-  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID;
-  const rawSa = process.env.FIREBASE_SERVICE_ACCOUNT;
-  const hasSa = Boolean(rawSa && rawSa.trim());
-  const hasPrivateKey = Boolean(process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_PRIVATE_KEY.trim());
-  const hasClientEmail = Boolean(process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_CLIENT_EMAIL.trim());
+  const projectId = (process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID).trim();
+  const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
+  const rawClientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+
+  const hasPrivateKey = Boolean(rawPrivateKey && rawPrivateKey.trim());
+  const hasClientEmail = Boolean(rawClientEmail && rawClientEmail.trim());
+
+  // Safe diagnostics (never log private keys or secrets)
+  console.log(`[Firebase Admin Diagnostics] credential source: split environment variables | projectId: ${projectId} | hasPrivateKey: ${hasPrivateKey} | hasClientEmail: ${hasClientEmail}`);
 
   try {
-    // 1. If FIREBASE_SERVICE_ACCOUNT is defined, parse and initialize strictly with cert()
-    if (hasSa) {
-      let sa: any = null;
-      if (typeof rawSa === 'object') {
-        sa = rawSa;
-      } else if (typeof rawSa === 'string') {
-        const trimmed = rawSa.trim();
-        // Option A: Standard JSON
-        try {
-          sa = JSON.parse(trimmed);
-        } catch {
-          // Option B: Base64 encoded JSON
-          try {
-            const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
-            sa = JSON.parse(decoded);
-          } catch {
-            // Option C: String with literal \n escapes
-            try {
-              const unescaped = trimmed.replace(/\\n/g, '\n');
-              sa = JSON.parse(unescaped);
-            } catch (err: any) {
-              const msg = `FIREBASE_SERVICE_ACCOUNT is provided but could not be parsed as valid JSON: ${err?.message || 'SyntaxError'}`;
-              console.error(`[Firebase Admin] ${msg}`);
-              throw new Error(msg);
-            }
-          }
-        }
-      }
-
-      if (!sa || typeof sa !== 'object') {
-        throw new Error("FIREBASE_SERVICE_ACCOUNT parsed value is not a valid JSON object.");
-      }
-
-      // Format private key correctly
-      if (typeof sa.private_key === 'string') {
-        sa.private_key = sa.private_key.replace(/\\n/g, '\n');
-      }
-
-      if (!sa.private_key || !sa.client_email) {
-        throw new Error("FIREBASE_SERVICE_ACCOUNT object is missing 'private_key' or 'client_email'.");
-      }
-
-      const saProjectId = sa.project_id || projectId;
-      console.log(`[Firebase Admin] Initializing with parsed service account for project: ${saProjectId}`);
-
-      adminApp = initializeApp({
-        credential: cert(sa),
-        projectId: saProjectId,
-      });
-
-      lastAdminInitError = null;
-      return adminApp;
-    }
-
-    // 2. Individual credentials fallback
+    // 1. Primary path: Split credentials (FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY)
     if (hasPrivateKey && hasClientEmail) {
-      console.log(`[Firebase Admin] Initializing with FIREBASE_PRIVATE_KEY & FIREBASE_CLIENT_EMAIL for project: ${projectId}`);
-      const privateKey = process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, '\n');
+      const clientEmail = rawClientEmail!.trim();
+      const rawKey = rawPrivateKey!;
+      const normalizedPrivateKey = formatPrivateKey(rawKey);
+
+      // Safe diagnostic logging (reports ONLY structural metadata, NEVER key contents)
+      const rawTrimmed = rawKey.trim();
+      const normTrimmed = normalizedPrivateKey.trim();
+
+      const diagnostics = {
+        privateKeyLength: rawKey.length,
+        startsWithBeginPrivateKey: rawTrimmed.startsWith("-----BEGIN PRIVATE KEY-----"),
+        endsWithEndPrivateKey: rawTrimmed.endsWith("-----END PRIVATE KEY-----"),
+        containsLiteralBackslashN: rawKey.includes("\\n"),
+        containsActualNewline: rawKey.includes("\n"),
+        normalizedPrivateKeyLength: normalizedPrivateKey.length,
+        normalizedStartsWithBeginPrivateKey: normTrimmed.startsWith("-----BEGIN PRIVATE KEY-----"),
+        normalizedEndsWithEndPrivateKey: normTrimmed.endsWith("-----END PRIVATE KEY-----"),
+      };
+
+      console.log(`[Firebase Admin Diagnostics] Key Analysis:`, JSON.stringify(diagnostics));
 
       adminApp = initializeApp({
         credential: cert({
           projectId,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-          privateKey,
+          clientEmail,
+          privateKey: normalizedPrivateKey,
         }),
         projectId,
       });
 
+      console.log(`[Firebase Admin] Successfully initialized Firebase Admin app via split environment variables for project: ${projectId}`);
       lastAdminInitError = null;
       return adminApp;
     }
 
-    // 3. Fallback only in local dev environment when neither service account nor keys are provided
+    // 2. Fallback only in local dev environment when credentials are not configured
     if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
-      console.log(`[Firebase Admin] Local development: Initializing with project ID only: ${projectId}`);
+      console.log(`[Firebase Admin] Local development fallback: Initializing with project ID only: ${projectId}`);
       adminApp = initializeApp({
         projectId,
       });
@@ -138,9 +125,9 @@ function initFirebaseAdmin() {
       return adminApp;
     }
 
-    // In production / Vercel, do NOT fall back to applicationDefault if no credentials were provided
+    // In production / Vercel, do NOT fall back to applicationDefault()
     throw new Error(
-      "Firebase Admin credentials missing in production. Please set FIREBASE_SERVICE_ACCOUNT in your Vercel Environment Variables."
+      `Firebase Admin credentials missing in production. Missing: ${[!hasPrivateKey ? 'FIREBASE_PRIVATE_KEY' : '', !hasClientEmail ? 'FIREBASE_CLIENT_EMAIL' : ''].filter(Boolean).join(', ')}`
     );
   } catch (err: any) {
     const errMsg = err?.message || String(err);
