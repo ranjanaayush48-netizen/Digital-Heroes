@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import Razorpay from "razorpay";
 import crypto from "crypto";
 import { initializeApp, getApps, cert } from "firebase-admin/app";
@@ -388,7 +387,7 @@ app.post("/api/webhooks/razorpay", async (req, res) => {
 });
 
 // API: Upload Winner Proof to Cloudinary
-app.post("/api/proofs/upload", upload.single('proof'), async (req: any, res) => {
+app.post("/api/proofs/upload", upload.single('proof') as any, async (req: any, res) => {
   try {
     const user = await verifyAuth(req);
     if (!user) return res.status(401).json({ error: "Unauthorized" });
@@ -505,14 +504,15 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 async function startServer() {
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  // Vite middleware strictly for non-Vercel local development
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!process.env.VERCEL) {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -520,13 +520,16 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  // Only bind port when not running inside Vercel serverless environment
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
-// Only start the server if this file is run directly (not as a module on Vercel)
-if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
+// Only start the server if not running inside a Vercel serverless function
+if (!process.env.VERCEL) {
   startServer();
 }
 
