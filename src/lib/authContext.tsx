@@ -168,47 +168,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const userDocRef = doc(db, 'users', user.uid);
-    
-    let existingSnap;
-    try {
-      // Ensure user auth token is fresh and ready
-      const token = await user.getIdToken(false);
-      console.log(`ONBOARDING STEP 1: users/${user.uid} read (auth uid: ${user.uid}, token length: ${token?.length})`);
-      existingSnap = await getDoc(userDocRef);
-      console.log(`ONBOARDING STEP 1 SUCCESS: Document exists = ${existingSnap.exists()}`);
-    } catch (step1Err: any) {
-      console.error(`ONBOARDING STEP 1 FAILED:`, step1Err);
-      throw step1Err;
-    }
-
-    const existingData = existingSnap.exists() ? (existingSnap.data() as Partial<UserProfile>) : {};
 
     const profileData: UserProfile = {
       uid: user.uid,
       email,
       displayName: trimmedName,
-      role: existingData.role || role,
-      subscriptionPlan: existingData.subscriptionPlan || 'monthly',
-      subscriptionStatus: existingData.subscriptionStatus || (isDefaultAdmin ? 'active' : 'inactive'),
-      subscriptionProvider: existingData.subscriptionProvider || 'demo',
-      selectedCharityId: charityId || existingData.selectedCharityId || 'charity-fairway-foundation',
+      role: userProfile?.role || role,
+      subscriptionPlan: userProfile?.subscriptionPlan || 'monthly',
+      subscriptionStatus: userProfile?.subscriptionStatus || (isDefaultAdmin ? 'active' : 'inactive'),
+      subscriptionProvider: userProfile?.subscriptionProvider || 'demo',
+      selectedCharityId: charityId || userProfile?.selectedCharityId || 'charity-fairway-foundation',
       charityContributionPercent: Math.max(10, Number(charityPercent) || 10),
-      createdAt: existingData.createdAt || new Date().toISOString(),
+      createdAt: userProfile?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
-    try {
-      console.log(`ONBOARDING STEP 2: users/${user.uid} write (doc exists: ${existingSnap.exists()}, payload uid: ${profileData.uid})`);
-      if (existingSnap.exists()) {
-        await setDoc(userDocRef, profileData, { merge: true });
-      } else {
-        await setDoc(userDocRef, profileData);
-      }
-      console.log(`ONBOARDING STEP 2 SUCCESS`);
-    } catch (step2Err: any) {
-      console.error(`ONBOARDING STEP 2 FAILED:`, step2Err);
-      throw step2Err;
-    }
+    // Clean direct document write matching `allow create` and `allow update`
+    await setDoc(userDocRef, profileData);
 
     setUserProfile(profileData);
     return profileData;
