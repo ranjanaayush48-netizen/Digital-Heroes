@@ -50,44 +50,56 @@ function initFirebaseAdmin() {
   }
 
   const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID;
-  let sa: any = null;
-  let saParseError: string | null = null;
+  const rawSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+  const hasSa = Boolean(rawSa && rawSa.trim());
+  const hasPrivateKey = Boolean(process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_PRIVATE_KEY.trim());
+  const hasClientEmail = Boolean(process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_CLIENT_EMAIL.trim());
 
-  // 1. Attempt to parse FIREBASE_SERVICE_ACCOUNT JSON safely
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    const rawSa = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (typeof rawSa === 'object') {
-      sa = rawSa;
-    } else if (typeof rawSa === 'string') {
-      try {
-        sa = JSON.parse(rawSa);
-      } catch (err1: any) {
-        // Fallback: check if base64 encoded
+  try {
+    // 1. If FIREBASE_SERVICE_ACCOUNT is defined, parse and initialize strictly with cert()
+    if (hasSa) {
+      let sa: any = null;
+      if (typeof rawSa === 'object') {
+        sa = rawSa;
+      } else if (typeof rawSa === 'string') {
+        const trimmed = rawSa.trim();
+        // Option A: Standard JSON
         try {
-          const decoded = Buffer.from(rawSa, 'base64').toString('utf8');
-          sa = JSON.parse(decoded);
+          sa = JSON.parse(trimmed);
         } catch {
-          // Fallback: check if escaped string
+          // Option B: Base64 encoded JSON
           try {
-            sa = JSON.parse(rawSa.replace(/\\n/g, '\n'));
-          } catch (err3: any) {
-            saParseError = err1?.message || err3?.message || "Invalid JSON format in FIREBASE_SERVICE_ACCOUNT";
-            console.error(`[Firebase Admin] Failed to parse FIREBASE_SERVICE_ACCOUNT: ${saParseError}`);
+            const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+            sa = JSON.parse(decoded);
+          } catch {
+            // Option C: String with literal \n escapes
+            try {
+              const unescaped = trimmed.replace(/\\n/g, '\n');
+              sa = JSON.parse(unescaped);
+            } catch (err: any) {
+              const msg = `FIREBASE_SERVICE_ACCOUNT is provided but could not be parsed as valid JSON: ${err?.message || 'SyntaxError'}`;
+              console.error(`[Firebase Admin] ${msg}`);
+              throw new Error(msg);
+            }
           }
         }
       }
-    }
-  }
 
-  try {
-    if (sa && typeof sa === 'object') {
-      // Normalize private key if escaped newlines exist
+      if (!sa || typeof sa !== 'object') {
+        throw new Error("FIREBASE_SERVICE_ACCOUNT parsed value is not a valid JSON object.");
+      }
+
+      // Format private key correctly
       if (typeof sa.private_key === 'string') {
         sa.private_key = sa.private_key.replace(/\\n/g, '\n');
       }
 
+      if (!sa.private_key || !sa.client_email) {
+        throw new Error("FIREBASE_SERVICE_ACCOUNT object is missing 'private_key' or 'client_email'.");
+      }
+
       const saProjectId = sa.project_id || projectId;
-      console.log(`[Firebase Admin] Initializing with service account object for project: ${saProjectId}`);
+      console.log(`[Firebase Admin] Initializing with parsed service account for project: ${saProjectId}`);
 
       adminApp = initializeApp({
         credential: cert(sa),
@@ -96,17 +108,17 @@ function initFirebaseAdmin() {
 
       lastAdminInitError = null;
       return adminApp;
-    } 
-    
-    // 2. Fallback to individual FIREBASE_PRIVATE_KEY and FIREBASE_CLIENT_EMAIL environment variables
-    if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
-      console.log(`[Firebase Admin] Falling back to FIREBASE_PRIVATE_KEY & FIREBASE_CLIENT_EMAIL for project: ${projectId}`);
-      const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
+    }
+
+    // 2. Individual credentials fallback
+    if (hasPrivateKey && hasClientEmail) {
+      console.log(`[Firebase Admin] Initializing with FIREBASE_PRIVATE_KEY & FIREBASE_CLIENT_EMAIL for project: ${projectId}`);
+      const privateKey = process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, '\n');
 
       adminApp = initializeApp({
         credential: cert({
           projectId,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
           privateKey,
         }),
         projectId,
@@ -116,28 +128,38 @@ function initFirebaseAdmin() {
       return adminApp;
     }
 
-    // 3. Fallback to default application credentials
-    console.log(`[Firebase Admin] Initializing with default application credentials for project: ${projectId}`);
-    adminApp = initializeApp({
-      projectId,
-    });
-    lastAdminInitError = null;
-    return adminApp;
+    // 3. Fallback only in local dev environment when neither service account nor keys are provided
+    if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+      console.log(`[Firebase Admin] Local development: Initializing with project ID only: ${projectId}`);
+      adminApp = initializeApp({
+        projectId,
+      });
+      lastAdminInitError = null;
+      return adminApp;
+    }
+
+    // In production / Vercel, do NOT fall back to applicationDefault if no credentials were provided
+    throw new Error(
+      "Firebase Admin credentials missing in production. Please set FIREBASE_SERVICE_ACCOUNT in your Vercel Environment Variables."
+    );
   } catch (err: any) {
     const errMsg = err?.message || String(err);
     const errCode = err?.code || err?.errorInfo?.code;
-    lastAdminInitError = { 
-      message: errMsg, 
+    lastAdminInitError = {
+      message: errMsg,
       code: errCode,
-      details: saParseError ? `Service account parse error: ${saParseError}` : undefined
     };
     console.error(`[Firebase Admin] Initialization failed - code: ${errCode || 'N/A'}, error: ${errMsg}`);
-    return null;
+    throw err;
   }
 }
 
 // Initial initialization attempt
-initFirebaseAdmin();
+try {
+  initFirebaseAdmin();
+} catch (e: any) {
+  console.warn(`[Firebase Admin] Eager initialization note: ${e?.message || e}`);
+}
 
 export const app = express();
 const PORT = 3000;
@@ -153,8 +175,8 @@ function getFirestoreInstance() {
     const currentApp = existingApps.length > 0 ? existingApps[0] : initFirebaseAdmin();
 
     if (!currentApp) {
-      console.error("[Firebase Admin] No initialized Firebase Admin app found when requesting Firestore instance.");
-      return null;
+      const errDetail = lastAdminInitError?.message || "No initialized Firebase Admin app";
+      throw new Error(`Firestore unavailable: ${errDetail}`);
     }
 
     firestoreInstance = getFirestore(currentApp);
@@ -163,7 +185,7 @@ function getFirestoreInstance() {
     const errMsg = err?.message || String(err);
     const errCode = err?.code || err?.errorInfo?.code;
     lastAdminInitError = { message: errMsg, code: errCode };
-    console.error(`[Firebase Admin] Firestore instance acquisition failed - code: ${errCode || 'N/A'}, error: ${errMsg}`);
+    console.error(`[Firebase Admin] Firestore instance acquisition failed: ${errMsg}`);
     return null;
   }
 }
@@ -256,7 +278,10 @@ async function verifyAuth(req: any) {
   if (!authHeader?.startsWith("Bearer ")) return null;
   const idToken = authHeader.split("Bearer ")[1];
   try {
-    const decodedToken = await getAuth().verifyIdToken(idToken);
+    const existingApps = getApps();
+    const currentApp = existingApps.length > 0 ? existingApps[0] : initFirebaseAdmin();
+    const authInstance = currentApp ? getAuth(currentApp) : getAuth();
+    const decodedToken = await authInstance.verifyIdToken(idToken);
     return decodedToken;
   } catch (err: any) {
     console.error("Auth verification failed:", err?.message || err);
