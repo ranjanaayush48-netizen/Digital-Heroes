@@ -1,0 +1,6 @@
+{
+  "name": "Digital Heroes",
+  "description": "A subscription-based golf performance, charity and monthly prize-draw platform combining game tracking, charitable impact, and community prize pools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
