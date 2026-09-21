@@ -88,6 +88,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [loadingWinners, setLoadingWinners] = useState(false);
   const [paymentConfirmWinner, setPaymentConfirmWinner] = useState<any | null>(null);
   const [paying, setPaying] = useState(false);
+  const [inspectingProof, setInspectingProof] = useState<{ url: string; userName: string; notes?: string; loading?: boolean } | null>(null);
 
   // Test Mode state
   const [testModeEnabled, setTestModeEnabled] = useState(false);
@@ -1004,6 +1005,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <button
                             onClick={async () => {
                               try {
+                                setInspectingProof({
+                                  url: '',
+                                  userName: win.userName || 'Subscriber',
+                                  notes: win.proofNotes,
+                                  loading: true
+                                });
+
                                 let url = win.proofImageData || win.proofUrl;
                                 
                                 // If it's a Cloudinary proof, we MUST get a signed URL from server
@@ -1012,23 +1020,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 }
 
                                 if (!url) {
+                                  setInspectingProof(null);
                                   alert("No proof image data available.");
                                   return;
                                 }
 
-                                const imgWin = window.open('', '_blank');
-                                if (imgWin) {
-                                  imgWin.document.write(`
-                                    <html>
-                                      <head><title>Proof for ${win.userName}</title></head>
-                                      <body style="margin:0; display:flex; justify-content:center; align-items:center; background:#0a0d0b;">
-                                        <img src="${url}" style="max-width: 100%; max-height: 100vh; object-fit: contain;" />
-                                      </body>
-                                    </html>
-                                  `);
-                                  imgWin.document.close();
-                                }
+                                setInspectingProof({
+                                  url,
+                                  userName: win.userName || 'Subscriber',
+                                  notes: win.proofNotes,
+                                  loading: false
+                                });
                               } catch (err: any) {
+                                setInspectingProof(null);
                                 alert("Failed to load proof: " + (err?.message || "Unknown error"));
                               }
                             }}
@@ -1346,6 +1350,72 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                 ) : 'Confirm Payment'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Proof Inspection Modal */}
+      {inspectingProof && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-[110] p-4 backdrop-blur-md">
+          <div className="bg-[#141b16] border border-[#2d4d38] rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-[#223528] flex items-center justify-between bg-[#19231c]">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <span>Scorecard Proof:</span>
+                  <span className="text-emerald-400">{inspectingProof.userName}</span>
+                </h3>
+                {inspectingProof.notes && (
+                  <p className="text-xs text-[#8e9f92] mt-0.5">
+                    Notes: {inspectingProof.notes}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {inspectingProof.url && (
+                  <a
+                    href={inspectingProof.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-2 rounded-lg bg-[#223528] text-[#8ce2a3] hover:bg-[#2e4736] transition-colors flex items-center gap-1.5 text-xs font-semibold"
+                    title="Open in new tab"
+                  >
+                    <span>Open in new tab</span>
+                    <ExternalLink size={14} />
+                  </a>
+                )}
+                <button
+                  onClick={() => setInspectingProof(null)}
+                  className="p-2 rounded-lg text-[#8e9f92] hover:text-white hover:bg-[#223528] transition-colors"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* Body / Image */}
+            <div className="flex-1 overflow-auto p-4 flex items-center justify-center min-h-[300px] bg-[#0c120e]">
+              {inspectingProof.loading ? (
+                <div className="flex flex-col items-center gap-3 text-[#8e9f92]">
+                  <div className="w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-400 rounded-full animate-spin" />
+                  <span className="text-sm">Fetching secure proof URL...</span>
+                </div>
+              ) : inspectingProof.url ? (
+                <img
+                  src={inspectingProof.url}
+                  alt={`Proof for ${inspectingProof.userName}`}
+                  className="max-w-full max-h-[75vh] object-contain rounded-lg border border-[#223528] shadow-lg"
+                  onError={(e) => {
+                    console.error("Failed to render proof image via signed URL:", inspectingProof.url);
+                  }}
+                />
+              ) : (
+                <div className="text-rose-400 text-sm flex items-center gap-2">
+                  <AlertCircle size={18} />
+                  <span>Unable to display proof image.</span>
+                </div>
+              )}
             </div>
           </div>
         </div>

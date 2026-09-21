@@ -571,25 +571,37 @@ app.get("/api/proofs/:winnerId/view", async (req: any, res) => {
     const winnerDoc = await firestore.collection("winners").doc(winnerId).get();
     if (!winnerDoc.exists) return res.status(404).json({ error: "Winner record not found" });
 
-    const winnerData = winnerDoc.data();
+    const winnerData = winnerDoc.data() || {};
     const isAdmin = user.role === 'admin' || user.email === process.env.DEFAULT_ADMIN_EMAIL;
     if (winnerData.userId !== user.uid && !isAdmin) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
     if (!winnerData.proofCloudinaryPublicId) {
+      // Fallback if legacy proof stored
+      if (winnerData.proofImageData || winnerData.proofUrl) {
+        return res.status(200).json({ url: winnerData.proofImageData || winnerData.proofUrl });
+      }
       return res.status(404).json({ error: "No proof uploaded for this winner" });
     }
+
+    const format = winnerData.proofCloudinaryMetadata?.format || undefined;
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600; // 1 hour
 
     const signedUrl = cloudinary.url(winnerData.proofCloudinaryPublicId, {
       sign_url: true,
       secure: true,
       resource_type: "image",
       type: "authenticated",
-      expires_at: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+      format: format,
+      expires_at: expiresAt,
     });
 
-    return res.status(200).json({ url: signedUrl });
+    return res.status(200).json({ 
+      url: signedUrl,
+      fallbackUrl: winnerData.proofCloudinaryMetadata?.secure_url || undefined,
+      notes: winnerData.proofNotes || '' 
+    });
   } catch (err: any) {
     const errorDetails = err?.message || String(err);
     console.error("Proof View Error:", errorDetails, err);
