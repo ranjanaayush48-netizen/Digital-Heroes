@@ -228,14 +228,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </p>
         </div>
 
-        {/* Subscription Badge & Demo Management */}
+        {/* Subscription Badge & Membership Management */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
           <div className="p-3 bg-[#151c17] border border-[#2b3b2f] rounded-xl text-xs w-full sm:w-auto">
             <div className="flex items-center justify-between gap-3">
-              <span className="text-[10px] uppercase text-[#738878] font-mono">Subscription (Demo Mode)</span>
-              <span className="text-[10px] text-amber-300/80 font-mono bg-[#232014] px-1.5 py-0.5 rounded border border-[#3e381f]">
-                No Real Payment
-              </span>
+              <span className="text-[10px] uppercase text-[#738878] font-mono">Membership Status</span>
             </div>
             <div className="flex items-center gap-1.5 mt-1 font-bold">
               <span className={`w-2 h-2 rounded-full ${userProfile?.subscriptionStatus === 'active' ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
@@ -351,7 +348,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div>
                   <h4 className="text-sm font-bold text-[#f1f5f2]">Active Subscription Required</h4>
                   <p className="text-xs text-[#8d9e91] mt-1 max-w-md mx-auto">
-                    Logging Stableford scores and entering monthly prize draws requires an active membership. Activate a demo subscription to test all subscriber functionality.
+                    Logging Stableford scores and entering monthly prize draws requires an active membership. Subscribe to activate full platform access.
                   </p>
                 </div>
                 <button
@@ -359,7 +356,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   onClick={onOpenSubscribe}
                   className="px-4 py-2 rounded-lg bg-[#274732] hover:bg-[#345f42] text-xs font-semibold text-white transition shadow-sm cursor-pointer inline-flex items-center gap-1.5"
                 >
-                  <span>Activate Demo Subscription</span>
+                  <span>Subscribe Now</span>
                 </button>
               </div>
             ) : (

@@ -7,7 +7,8 @@ import {
   updateDoc, 
   query, 
   where, 
-  orderBy 
+  orderBy,
+  runTransaction 
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { 
@@ -83,7 +84,6 @@ export const generateAlgorithmicNumbers = (userScores: number[], count = 5, min 
 export interface SimulateDrawParams {
   month: string; // YYYY-MM
   drawMethod: DrawMethod;
-  customWinningNumbers?: number[];
   monthlyAllocationPerSub?: number; // default $10
   jackpotRolloverIn?: number;
 }
@@ -140,11 +140,9 @@ export const simulateMonthlyDraw = async (params: SimulateDrawParams): Promise<M
     }
   }
 
-  // 3. Generate winning numbers if not manually provided
+  // 3. Generate winning numbers using PRD methods (Random or Algorithmic Frequency-Weighted)
   let winningNumbers: number[];
-  if (params.customWinningNumbers && params.customWinningNumbers.length === 5) {
-    winningNumbers = [...params.customWinningNumbers].sort((a, b) => a - b);
-  } else if (params.drawMethod === 'algorithmic') {
+  if (params.drawMethod === 'algorithmic') {
     winningNumbers = generateAlgorithmicNumbers(allSubScores, 5, 1, 45);
   } else {
     winningNumbers = generateRandomNumbers(5, 1, 45);
@@ -300,59 +298,110 @@ export const simulateMonthlyDraw = async (params: SimulateDrawParams): Promise<M
   return simulatedDraw;
 };
 
-export const publishMonthlyDraw = async (draw: MonthlyDraw): Promise<void> => {
-  console.log('drawService Trace: Starting publishMonthlyDraw for', draw.id);
+export interface PublishDrawResult {
+  success: boolean;
+  drawId: string;
+  month: string;
+  winnersCount: number;
+}
+
+export const publishMonthlyDraw = async (draw: MonthlyDraw): Promise<PublishDrawResult> => {
+  console.log('drawService Trace: Starting atomic publishMonthlyDraw for month:', draw.month);
+  
+  // Requirement: One authoritative month-based ID for all published draws
+  const drawDocId = `draw-${draw.month}`;
+  const drawRef = doc(db, 'draws', drawDocId);
+
   const publishedDraw: MonthlyDraw = {
     ...draw,
+    id: drawDocId,
     status: 'published',
-    publishedAt: new Date().toISOString()
-  };
+    publishedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  } as any;
 
-  try {
-    console.log('drawService Trace: Writing to draws collection...', draw.id);
-    const drawRef = doc(db, 'draws', draw.id);
-    await setDoc(drawRef, publishedDraw);
-    console.log('drawService Trace: Draw document successfully written to Firestore');
-  } catch (error: any) {
-    console.error('drawService Trace: FATAL ERROR writing draw doc:', error);
-    console.error('drawService Trace: Error code:', error?.code);
-    console.error('drawService Trace: Error message:', error?.message);
-    throw error;
-  }
-
-  // Store winner records in a top-level winners collection for easy auditing and verification flow
-  const allWinners = [
-    ...draw.tiers.fiveMatch.winners,
-    ...draw.tiers.fourMatch.winners,
-    ...draw.tiers.threeMatch.winners
+  const allWinners: WinnerRecord[] = [
+    ...(draw.tiers.fiveMatch?.winners || []),
+    ...(draw.tiers.fourMatch?.winners || []),
+    ...(draw.tiers.threeMatch?.winners || [])
   ];
 
-  console.log(`drawService Trace: Preparing to write ${allWinners.length} winner records...`);
-  
-  let successCount = 0;
-  for (const winner of allWinners) {
-    try {
-      const winnerId = `${draw.id}_${winner.userId}`;
-      console.log(`drawService Trace: Writing winner record for ${winner.userId} (ID: ${winnerId})`);
-      const winnerRef = doc(db, 'winners', winnerId);
-      await setDoc(winnerRef, {
-        ...winner,
-        drawId: draw.id,
-        drawMonth: draw.month,
-        drawTitle: draw.title,
-        winningNumbers: draw.winningNumbers,
-        createdAt: new Date().toISOString()
-      }, { merge: true });
-      successCount++;
-    } catch (error: any) {
-      console.error(`drawService Trace: ERROR writing winner record ${winner.userId}:`, error);
-      console.error('drawService Trace: Error details:', error?.code, error?.message);
-      // We continue to other winners even if one fails
-    }
+  console.log(`drawService Trace: Initiating atomic Firestore transaction for draw ${drawDocId} with ${allWinners.length} potential winners...`);
+
+  try {
+    const result = await runTransaction(db, async (transaction) => {
+      // 1. ALL READS FIRST
+      // Requirement: Check for existing published draw for this month inside the transaction
+      const drawDocSnap = await transaction.get(drawRef);
+
+      if (drawDocSnap.exists()) {
+        const existingData = drawDocSnap.data() as Partial<MonthlyDraw>;
+        if (existingData?.status === 'published') {
+          console.warn(`drawService Trace: Transaction aborted. Month ${draw.month} is already published.`);
+          const err: any = new Error("This month's draw has already been published.");
+          err.code = 'ALREADY_PUBLISHED';
+          throw err;
+        }
+      }
+
+      // Requirement: Deterministic Winner IDs based on draw month + userId
+      const winnerItems = allWinners.map(winner => {
+        const winnerDocId = `${drawDocId}_${winner.userId}`;
+        const winnerRef = doc(db, 'winners', winnerDocId);
+        return { winner, winnerDocId, winnerRef };
+      });
+
+      // Execute reads for all potential winner documents to ensure atomicity
+      const winnerSnaps = await Promise.all(
+        winnerItems.map(item => transaction.get(item.winnerRef))
+      );
+
+      // 2. ALL WRITES AFTER ALL READS
+      // This 'set' with the deterministic ID ensures we never have two documents for the same month
+      transaction.set(drawRef, publishedDraw, { merge: true });
+
+      winnerItems.forEach((item, index) => {
+        const existingWinner = winnerSnaps[index]?.exists() ? (winnerSnaps[index].data() as any) : null;
+
+        // Idempotent payload: preserve existing proof/payment if present
+        const winnerPayload: WinnerRecord & { 
+          id: string;
+          drawId: string; 
+          drawMonth: string; 
+          drawTitle: string; 
+          winningNumbers: number[]; 
+          createdAt: string; 
+          updatedAt: string 
+        } = {
+          ...item.winner,
+          id: item.winnerDocId,
+          drawId: drawDocId,
+          drawMonth: draw.month,
+          drawTitle: draw.title,
+          winningNumbers: draw.winningNumbers,
+          proofStatus: existingWinner?.proofStatus || item.winner.proofStatus || 'none',
+          paymentStatus: existingWinner?.paymentStatus || item.winner.paymentStatus || 'pending',
+          createdAt: existingWinner?.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+
+        transaction.set(item.winnerRef, winnerPayload, { merge: true });
+      });
+
+      return {
+        success: true,
+        drawId: drawDocId,
+        month: draw.month,
+        winnersCount: allWinners.length
+      };
+    });
+
+    console.log(`drawService Trace: Atomic publication succeeded for ${result.drawId}`);
+    return result;
+  } catch (error: any) {
+    console.error('drawService: Transaction failed:', error);
+    throw error;
   }
-  
-  console.log(`drawService Trace: Finished writing winner records. Success: ${successCount}/${allWinners.length}`);
-  console.log('drawService Trace: publishMonthlyDraw complete');
 };
 
 export const getPublishedDraws = async (): Promise<MonthlyDraw[]> => {
@@ -364,18 +413,21 @@ export const getPublishedDraws = async (): Promise<MonthlyDraw[]> => {
     );
     const snap = await getDocs(q);
     const draws: MonthlyDraw[] = [];
+    const publishedMonths = new Set<string>();
+
     snap.forEach(docSnap => {
-      draws.push({ id: docSnap.id, ...(docSnap.data() as Omit<MonthlyDraw, 'id'>) });
+      const data = docSnap.data() as Omit<MonthlyDraw, 'id'>;
+      draws.push({ id: docSnap.id, ...data });
+      publishedMonths.add(data.month);
     });
 
-    // If empty, return initial demo draw
-    if (draws.length === 0) {
-      return INITIAL_DRAWS;
-    }
-    return draws;
+    // Filter INITIAL_DRAWS (demo data) to exclude any months already present in Firestore
+    const filteredInitial = INITIAL_DRAWS.filter(d => !publishedMonths.has(d.month));
+    
+    // Return combined list, with real draws taking precedence for any overlapping months
+    return [...draws, ...filteredInitial].sort((a, b) => b.drawDate.localeCompare(a.drawDate));
   } catch (error) {
     console.error('drawService: Error fetching published draws:', error);
-    // Return initial draws as fallback to prevent app crash
     return INITIAL_DRAWS;
   }
 };
