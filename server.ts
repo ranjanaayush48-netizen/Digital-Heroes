@@ -3,7 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import Razorpay from "razorpay";
 import crypto from "crypto";
-import { initializeApp, getApps } from "firebase-admin/app";
+import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import { v2 as cloudinary } from "cloudinary";
@@ -35,12 +35,27 @@ const upload = multer({
   }
 });
 
-// Initialize Firebase Admin safely
+// Initialize Firebase Admin safely with support for Service Account credentials
 if (getApps().length === 0) {
   try {
-    initializeApp();
-  } catch (err) {
-    console.error("Firebase Admin initialization failed. Continuing without it...", err);
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      const sa = typeof process.env.FIREBASE_SERVICE_ACCOUNT === 'string'
+        ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+        : process.env.FIREBASE_SERVICE_ACCOUNT;
+      initializeApp({ credential: cert(sa) });
+    } else if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
+      initializeApp({
+        credential: cert({
+          projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        }),
+      });
+    } else {
+      initializeApp();
+    }
+  } catch (err: any) {
+    console.error("Firebase Admin initialization failed. Continuing without it...", err?.message || err);
   }
 }
 
@@ -53,8 +68,8 @@ function getFirestoreInstance() {
   if (!firestoreInstance) {
     try {
       firestoreInstance = getFirestore();
-    } catch (err) {
-      console.error("Firestore initialization failed:", err);
+    } catch (err: any) {
+      console.error("Firestore initialization failed:", err?.message || err);
       return null;
     }
   }
@@ -64,15 +79,18 @@ function getFirestoreInstance() {
 // Lazy Razorpay initialization to prevent startup crash if keys are missing
 let razorpayInstance: Razorpay | null = null;
 function getRazorpay() {
+  const key_id = process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID;
+  const key_secret = process.env.RAZORPAY_KEY_SECRET;
+  
+  if (!key_id || !key_secret) {
+    const missing: string[] = [];
+    if (!key_id) missing.push("RAZORPAY_KEY_ID (or VITE_RAZORPAY_KEY_ID)");
+    if (!key_secret) missing.push("RAZORPAY_KEY_SECRET");
+    console.error(`Razorpay configuration error: Missing environment variables [${missing.join(", ")}]`);
+    return null;
+  }
+  
   if (!razorpayInstance) {
-    const key_id = process.env.VITE_RAZORPAY_KEY_ID;
-    const key_secret = process.env.RAZORPAY_KEY_SECRET;
-    
-    if (!key_id || !key_secret) {
-      console.warn("Razorpay keys are missing in environment variables. Payment features will fail.");
-      return null;
-    }
-    
     razorpayInstance = new Razorpay({
       key_id,
       key_secret,
@@ -88,21 +106,33 @@ const planCache: Record<string, string> = {
 };
 
 async function getOrCreatePlan(type: 'monthly' | 'yearly') {
+  const envPlanId = type === 'monthly' ? process.env.RAZORPAY_MONTHLY_PLAN_ID : process.env.RAZORPAY_YEARLY_PLAN_ID;
+  if (envPlanId && envPlanId.trim()) {
+    return envPlanId.trim();
+  }
+
   if (planCache[type]) return planCache[type];
 
   const rzp = getRazorpay();
-  if (!rzp) throw new Error("Razorpay not configured");
+  if (!rzp) throw new Error("Razorpay not configured on server (missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET)");
 
-  console.log(`Razorpay: Searching for ${type} plan...`);
+  console.log(`Razorpay: Searching for existing ${type} plan...`);
   try {
     const plans = await rzp.plans.all();
-    const existing = plans.items.find(p => p.item.name === `Digital Heroes ${type === 'monthly' ? 'Monthly' : 'Yearly'} Membership`);
-    if (existing) {
-      planCache[type] = existing.id;
-      return existing.id;
+    if (plans && Array.isArray(plans.items)) {
+      const targetName = `Digital Heroes ${type === 'monthly' ? 'Monthly' : 'Yearly'} Membership`;
+      const existing = plans.items.find(
+        (p: any) => p.item?.name === targetName || (p.item?.amount === (type === 'monthly' ? 2900 : 29000) && p.period === (type === 'monthly' ? 'monthly' : 'yearly'))
+      );
+      if (existing) {
+        console.log(`Razorpay: Found existing ${type} plan with ID ${existing.id}`);
+        planCache[type] = existing.id;
+        return existing.id;
+      }
     }
-  } catch (err) {
-    console.error("Error fetching plans:", err);
+  } catch (err: any) {
+    const msg = err?.error?.description || err?.description || err?.message || String(err);
+    console.warn(`Razorpay plan search note (${msg}), creating new plan...`);
   }
 
   console.log(`Razorpay: Creating new ${type} plan...`);
@@ -111,12 +141,17 @@ async function getOrCreatePlan(type: 'monthly' | 'yearly') {
     interval: 1,
     item: {
       name: `Digital Heroes ${type === 'monthly' ? 'Monthly' : 'Yearly'} Membership`,
-      amount: (type === 'monthly' ? 29 : 290) * 100, // in paise/cents
-      currency: "INR", // Razorpay test mode usually defaults to INR
+      amount: (type === 'monthly' ? 29 : 290) * 100, // in paise: ₹29 -> 2900, ₹290 -> 29000
+      currency: "INR",
       description: `Access to Digital Heroes score tracking and prize draws (${type})`,
     },
   });
-  
+
+  if (!plan || !plan.id) {
+    throw new Error(`Razorpay plan creation failed: no plan ID returned.`);
+  }
+
+  console.log(`Razorpay: Created new ${type} plan with ID ${plan.id}`);
   planCache[type] = plan.id;
   return plan.id;
 }
@@ -131,71 +166,104 @@ async function verifyAuth(req: any) {
   try {
     const decodedToken = await getAuth().verifyIdToken(idToken);
     return decodedToken;
-  } catch (err) {
-    console.error("Auth verification failed:", err);
+  } catch (err: any) {
+    console.error("Auth verification failed:", err?.message || err);
     return null;
   }
 }
 
 // API: Create Subscription
 app.post("/api/subscriptions/create", async (req, res) => {
-  const { plan, userId } = req.body;
-  if (!plan || !userId) return res.status(400).json({ error: "Missing fields" });
-
-  const rzp = getRazorpay();
-  if (!rzp) return res.status(500).json({ error: "Razorpay not configured on server" });
-
   try {
-    const planId = await getOrCreatePlan(plan as 'monthly' | 'yearly');
-    
+    const { plan, userId } = req.body || {};
+    if (!plan || !userId) {
+      return res.status(400).json({ error: "Missing required fields: plan and userId are required." });
+    }
+
+    if (plan !== 'monthly' && plan !== 'yearly') {
+      return res.status(400).json({ error: `Invalid plan "${plan}". Must be "monthly" or "yearly".` });
+    }
+
+    const key_id = process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID;
+    const key_secret = process.env.RAZORPAY_KEY_SECRET;
+
+    if (!key_id || !key_secret) {
+      const missing: string[] = [];
+      if (!key_id) missing.push("RAZORPAY_KEY_ID (or VITE_RAZORPAY_KEY_ID)");
+      if (!key_secret) missing.push("RAZORPAY_KEY_SECRET");
+      console.error(`Razorpay configuration error: Missing [${missing.join(", ")}]`);
+      return res.status(500).json({ 
+        error: `Server payment configuration error: Missing ${missing.join(", ")}. Please configure these environment variables in Vercel.` 
+      });
+    }
+
+    const rzp = getRazorpay();
+    if (!rzp) {
+      return res.status(500).json({ error: "Razorpay initialization failed on server." });
+    }
+
+    let planId: string;
+    try {
+      planId = await getOrCreatePlan(plan as 'monthly' | 'yearly');
+    } catch (planErr: any) {
+      const planErrMsg = planErr?.error?.description || planErr?.description || planErr?.message || String(planErr);
+      console.error("Razorpay Plan Error:", planErrMsg, planErr);
+      return res.status(500).json({ error: `Razorpay Plan Error: ${planErrMsg}` });
+    }
+
     const subscription = await rzp.subscriptions.create({
       plan_id: planId,
-      total_count: plan === 'monthly' ? 60 : 10, // 5 years max roughly
+      total_count: plan === 'monthly' ? 60 : 10, // 5 years max
       customer_notify: 1,
       notes: { 
         userId, 
         plan,
-        env: 'test'
+        env: process.env.NODE_ENV || 'production'
       },
     });
 
-    res.json({ 
+    if (!subscription || !subscription.id) {
+      throw new Error("Razorpay subscription creation returned an empty response.");
+    }
+
+    return res.status(200).json({ 
       subscriptionId: subscription.id,
-      keyId: process.env.VITE_RAZORPAY_KEY_ID 
+      keyId: key_id 
     });
   } catch (err: any) {
-    console.error("Razorpay Sub Creation Error:", err);
-    res.status(500).json({ error: err.message });
+    const errorDetails = err?.error?.description || err?.description || err?.message || (typeof err === 'string' ? err : JSON.stringify(err));
+    console.error("Razorpay Sub Creation Error:", errorDetails, err);
+    return res.status(500).json({ error: errorDetails || "Failed to create Razorpay subscription." });
   }
 });
 
 // API: Cancel Subscription
 app.post("/api/subscriptions/cancel", async (req, res) => {
-  const { userId } = req.body;
-  if (!userId) return res.status(400).json({ error: "Missing userId" });
-
-  const rzp = getRazorpay();
-  if (!rzp) return res.status(500).json({ error: "Razorpay not configured on server" });
-
   try {
+    const { userId } = req.body || {};
+    if (!userId) return res.status(400).json({ error: "Missing required field: userId." });
+
+    const rzp = getRazorpay();
+    if (!rzp) return res.status(500).json({ error: "Razorpay not configured on server." });
+
     const firestore = getFirestoreInstance();
-    if (!firestore) return res.status(500).json({ error: "Firestore not available on server" });
+    if (!firestore) return res.status(500).json({ error: "Firestore database unavailable on server." });
 
     const subDoc = await firestore.collection("subscriptions").doc(userId).get();
     if (!subDoc.exists) {
-      return res.status(404).json({ error: "Subscription not found" });
+      return res.status(404).json({ error: "Subscription not found." });
     }
 
     const subData = subDoc.data();
     const subscriptionId = subData?.id;
 
     if (subData?.provider === 'razorpay' && subscriptionId) {
-      await rzp.subscriptions.cancel(subscriptionId, false); // false = immediate
+      try {
+        await rzp.subscriptions.cancel(subscriptionId, false); // false = immediate
+      } catch (cancelErr: any) {
+        console.warn("Razorpay subscription cancel note:", cancelErr?.message || cancelErr);
+      }
       
-      // We could wait for webhook, but let's update immediately for better UX
-      const firestore = getFirestoreInstance();
-      if (!firestore) return res.status(500).json({ error: "Firestore not available" });
-
       const now = new Date().toISOString();
       await firestore.collection("subscriptions").doc(userId).update({
         status: 'cancelled',
@@ -208,17 +276,13 @@ app.post("/api/subscriptions/cancel", async (req, res) => {
         updatedAt: now
       });
 
-      res.json({ 
+      return res.status(200).json({ 
         success: true, 
         message: "Subscription cancelled successfully",
         subscription: { ...subData, status: 'cancelled', cancelledAt: now }
       });
     } else {
-      // Fallback for demo/legacy
       const now = new Date().toISOString();
-      const firestore = getFirestoreInstance();
-      if (!firestore) return res.status(500).json({ error: "Firestore not available" });
-
       await firestore.collection("subscriptions").doc(userId).update({
         status: 'cancelled',
         cancelledAt: now,
@@ -228,57 +292,58 @@ app.post("/api/subscriptions/cancel", async (req, res) => {
         subscriptionStatus: 'cancelled',
         updatedAt: now
       });
-      res.json({ success: true, message: "Legacy subscription cancelled" });
+      return res.status(200).json({ success: true, message: "Subscription cancelled successfully." });
     }
   } catch (err: any) {
-    console.error("Razorpay Sub Cancel Error:", err);
-    res.status(500).json({ error: err.message });
+    const errorDetails = err?.error?.description || err?.description || err?.message || (typeof err === 'string' ? err : JSON.stringify(err));
+    console.error("Razorpay Sub Cancel Error:", errorDetails, err);
+    return res.status(500).json({ error: errorDetails || "Failed to cancel subscription." });
   }
 });
 
-// Webhook
+// API: Webhook
 app.post("/api/webhooks/razorpay", async (req, res) => {
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET || "";
-  const signature = req.headers["x-razorpay-signature"] as string;
-  
-  if (secret) {
-    const expectedSignature = crypto
-      .createHmac("sha256", secret)
-      .update(JSON.stringify(req.body))
-      .digest("hex");
-
-    if (signature !== expectedSignature) {
-      console.error("Razorpay Webhook: Invalid signature");
-      return res.status(400).send("Invalid signature");
-    }
-  }
-
-  const event = req.body.event;
-  const payload = req.body.payload;
-
-  console.log(`Razorpay Webhook Received: ${event}`);
-
   try {
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET || "";
+    const signature = req.headers["x-razorpay-signature"] as string;
+    
+    if (secret) {
+      const expectedSignature = crypto
+        .createHmac("sha256", secret)
+        .update(JSON.stringify(req.body))
+        .digest("hex");
+
+      if (signature !== expectedSignature) {
+        console.error("Razorpay Webhook: Invalid signature");
+        return res.status(400).json({ error: "Invalid signature" });
+      }
+    }
+
+    const event = req.body?.event;
+    const payload = req.body?.payload;
+
+    console.log(`Razorpay Webhook Received: ${event}`);
+
     const firestore = getFirestoreInstance();
     if (!firestore) {
       console.error("Razorpay Webhook: Firestore not available");
-      return res.status(500).send("Firestore not available");
+      return res.status(500).json({ error: "Firestore not available" });
     }
 
     if (event === "subscription.activated" || event === "subscription.charged") {
-      const sub = payload.subscription.entity;
-      const { userId, plan } = sub.notes;
+      const sub = payload?.subscription?.entity;
+      const { userId, plan } = sub?.notes || {};
       
       if (userId) {
         const now = new Date().toISOString();
-        const renewalDate = new Date(sub.current_end * 1000).toISOString();
+        const renewalDate = sub.current_end ? new Date(sub.current_end * 1000).toISOString() : now;
         
         console.log(`Activating subscription for user ${userId}, plan ${plan}`);
 
         await firestore.collection("subscriptions").doc(userId).set({
           id: sub.id,
           userId,
-          plan,
+          plan: plan || 'monthly',
           provider: 'razorpay',
           status: 'active',
           startedAt: now,
@@ -288,15 +353,15 @@ app.post("/api/webhooks/razorpay", async (req, res) => {
 
         await firestore.collection("users").doc(userId).update({
           subscriptionStatus: 'active',
-          subscriptionPlan: plan,
+          subscriptionPlan: plan || 'monthly',
           subscriptionRenewalDate: renewalDate,
           subscriptionProvider: 'razorpay',
           updatedAt: now
         });
       }
     } else if (event === "subscription.cancelled" || event === "subscription.halted" || event === "subscription.expired") {
-      const sub = payload.subscription.entity;
-      const { userId } = sub.notes;
+      const sub = payload?.subscription?.entity;
+      const { userId } = sub?.notes || {};
       
       if (userId) {
         const status = (event === "subscription.cancelled" || event === "subscription.expired") ? 'cancelled' : 'failed';
@@ -313,12 +378,130 @@ app.post("/api/webhooks/razorpay", async (req, res) => {
         });
       }
     }
-  } catch (err) {
-    console.error("Error processing webhook:", err);
-    return res.status(500).send("Webhook processing failed");
-  }
 
-  res.send("ok");
+    return res.status(200).json({ status: "ok" });
+  } catch (err: any) {
+    const errorDetails = err?.message || String(err);
+    console.error("Error processing webhook:", errorDetails, err);
+    return res.status(500).json({ error: "Webhook processing failed", details: errorDetails });
+  }
+});
+
+// API: Upload Winner Proof to Cloudinary
+app.post("/api/proofs/upload", upload.single('proof'), async (req: any, res) => {
+  try {
+    const user = await verifyAuth(req);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+    const { winnerId, notes } = req.body;
+    if (!winnerId) return res.status(400).json({ error: "Missing winnerId" });
+
+    const firestore = getFirestoreInstance();
+    if (!firestore) return res.status(500).json({ error: "Firestore unavailable" });
+
+    const winnerDoc = await firestore.collection("winners").doc(winnerId).get();
+    if (!winnerDoc.exists) return res.status(404).json({ error: "Winner record not found" });
+    
+    const winnerData = winnerDoc.data() || {};
+    const isAdmin = user.role === 'admin' || user.email === process.env.DEFAULT_ADMIN_EMAIL;
+    if (winnerData.userId !== user.uid && !isAdmin) {
+      return res.status(403).json({ error: "Forbidden: You do not own this winner record" });
+    }
+
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: "digital-heroes/winner-proofs",
+        access_mode: "authenticated",
+        resource_type: "image",
+        public_id: `${winnerId}_${Date.now()}`,
+      },
+      async (error, result) => {
+        if (error || !result) {
+          console.error("Cloudinary Upload Error:", error);
+          return res.status(500).json({ error: "Failed to upload to Cloudinary" });
+        }
+
+        await firestore.collection("winners").doc(winnerId).update({
+          proofCloudinaryPublicId: result.public_id,
+          proofCloudinaryMetadata: {
+            format: result.format,
+            version: result.version,
+            secure_url: result.secure_url,
+          },
+          proofFileName: req.file?.originalname,
+          proofContentType: req.file?.mimetype,
+          proofNotes: notes || '',
+          proofStatus: 'Submitted',
+          proofSubmittedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+
+        return res.status(200).json({ success: true, publicId: result.public_id });
+      }
+    );
+
+    stream.end(req.file.buffer);
+  } catch (err: any) {
+    const errorDetails = err?.message || String(err);
+    console.error("Proof Upload Error:", errorDetails, err);
+    return res.status(500).json({ error: errorDetails });
+  }
+});
+
+// API: Get Signed URL for Proof View
+app.get("/api/proofs/:winnerId/view", async (req: any, res) => {
+  try {
+    const user = await verifyAuth(req);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const { winnerId } = req.params;
+
+    const firestore = getFirestoreInstance();
+    if (!firestore) return res.status(500).json({ error: "Firestore unavailable" });
+
+    const winnerDoc = await firestore.collection("winners").doc(winnerId).get();
+    if (!winnerDoc.exists) return res.status(404).json({ error: "Winner record not found" });
+
+    const winnerData = winnerDoc.data();
+    const isAdmin = user.role === 'admin' || user.email === process.env.DEFAULT_ADMIN_EMAIL;
+    if (winnerData.userId !== user.uid && !isAdmin) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    if (!winnerData.proofCloudinaryPublicId) {
+      return res.status(404).json({ error: "No proof uploaded for this winner" });
+    }
+
+    const signedUrl = cloudinary.url(winnerData.proofCloudinaryPublicId, {
+      sign_url: true,
+      secure: true,
+      resource_type: "image",
+      type: "authenticated",
+      expires_at: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+    });
+
+    return res.status(200).json({ url: signedUrl });
+  } catch (err: any) {
+    const errorDetails = err?.message || String(err);
+    console.error("Proof View Error:", errorDetails, err);
+    return res.status(500).json({ error: errorDetails });
+  }
+});
+
+// Global API 404 handler to ensure /api/* requests always return JSON
+app.all("/api/*", (req, res) => {
+  res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.path}` });
+});
+
+// Global error handling middleware to ensure errors always return JSON
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const errorMsg = err?.error?.description || err?.description || err?.message || "Internal server error";
+  console.error("Unhandled Express Error:", errorMsg, err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: errorMsg });
+  }
 });
 
 async function startServer() {
@@ -337,112 +520,7 @@ async function startServer() {
     });
   }
 
-  // API: Upload Winner Proof to Cloudinary
-app.post("/api/proofs/upload", upload.single('proof'), async (req: any, res) => {
-  const user = await verifyAuth(req);
-  if (!user) return res.status(401).json({ error: "Unauthorized" });
-
-  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-
-  const { winnerId, notes } = req.body;
-  if (!winnerId) return res.status(400).json({ error: "Missing winnerId" });
-
-  try {
-    const firestore = getFirestoreInstance();
-    if (!firestore) return res.status(500).json({ error: "Firestore unavailable" });
-
-    // Verify the winner record belongs to the user OR user is admin
-    const winnerDoc = await firestore.collection("winners").doc(winnerId).get();
-    if (!winnerDoc.exists) return res.status(404).json({ error: "Winner record not found" });
-    
-    const winnerData = winnerDoc.data() || {};
-    const isAdmin = user.role === 'admin' || user.email === process.env.DEFAULT_ADMIN_EMAIL;
-    if (winnerData.userId !== user.uid && !isAdmin) {
-      return res.status(403).json({ error: "Forbidden: You do not own this winner record" });
-    }
-
-    // Upload to Cloudinary
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        folder: "digital-heroes/winner-proofs",
-        access_mode: "authenticated",
-        resource_type: "image",
-        public_id: `${winnerId}_${Date.now()}`,
-      },
-      async (error, result) => {
-        if (error || !result) {
-          console.error("Cloudinary Upload Error:", error);
-          return res.status(500).json({ error: "Failed to upload to Cloudinary" });
-        }
-
-        // Update Firestore
-        await firestore.collection("winners").doc(winnerId).update({
-          proofCloudinaryPublicId: result.public_id,
-          proofCloudinaryMetadata: {
-            format: result.format,
-            version: result.version,
-            secure_url: result.secure_url,
-          },
-          proofFileName: req.file?.originalname,
-          proofContentType: req.file?.mimetype,
-          proofNotes: notes || '',
-          proofStatus: 'Submitted',
-          proofSubmittedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        });
-
-        res.json({ success: true, publicId: result.public_id });
-      }
-    );
-
-    stream.end(req.file.buffer);
-  } catch (err: any) {
-    console.error("Proof Upload Error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// API: Get Signed URL for Proof View
-app.get("/api/proofs/:winnerId/view", async (req: any, res) => {
-  const user = await verifyAuth(req);
-  if (!user) return res.status(401).json({ error: "Unauthorized" });
-
-  const { winnerId } = req.params;
-
-  try {
-    const firestore = getFirestoreInstance();
-    if (!firestore) return res.status(500).json({ error: "Firestore unavailable" });
-
-    const winnerDoc = await firestore.collection("winners").doc(winnerId).get();
-    if (!winnerDoc.exists) return res.status(404).json({ error: "Winner record not found" });
-
-    const winnerData = winnerDoc.data();
-    const isAdmin = user.role === 'admin' || user.email === process.env.DEFAULT_ADMIN_EMAIL;
-    if (winnerData.userId !== user.uid && !isAdmin) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-
-    if (!winnerData.proofCloudinaryPublicId) {
-      return res.status(404).json({ error: "No proof uploaded for this winner" });
-    }
-
-    // Generate signed URL
-    const signedUrl = cloudinary.url(winnerData.proofCloudinaryPublicId, {
-      sign_url: true,
-      secure: true,
-      resource_type: "image",
-      type: "authenticated",
-      expires_at: Math.floor(Date.now() / 1000) + 3600, // 1 hour
-    });
-
-    res.json({ url: signedUrl });
-  } catch (err: any) {
-    console.error("Proof View Error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

@@ -71,12 +71,24 @@ export const SubscriptionView: React.FC<SubscriptionViewProps> = ({
         }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to initialize subscription');
+      let responseData: any = null;
+      try {
+        const text = await response.text();
+        responseData = text ? JSON.parse(text) : null;
+      } catch (parseErr) {
+        console.error('Failed to parse subscription response as JSON:', parseErr);
       }
 
-      const { subscriptionId, keyId } = await response.json();
+      if (!response.ok) {
+        const errorMsg = responseData?.error || responseData?.message || `Server error (${response.status})`;
+        throw new Error(errorMsg);
+      }
+
+      if (!responseData || !responseData.subscriptionId) {
+        throw new Error(responseData?.error || 'Subscription initialization failed: No subscription ID returned from server.');
+      }
+
+      const { subscriptionId, keyId } = responseData;
 
       // 3. Open Razorpay Checkout
       const options = {

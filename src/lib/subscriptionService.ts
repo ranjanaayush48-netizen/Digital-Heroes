@@ -81,12 +81,20 @@ export class RazorpaySubscriptionProvider implements ISubscriptionProvider {
       body: JSON.stringify({ userId }),
     });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to cancel Razorpay subscription.');
+    let responseData: any = null;
+    try {
+      const text = await response.text();
+      responseData = text ? JSON.parse(text) : null;
+    } catch {
+      responseData = null;
     }
 
-    return await response.json();
+    if (!response.ok) {
+      const errorMsg = responseData?.error || responseData?.message || `Failed to cancel subscription (${response.status})`;
+      throw new Error(errorMsg);
+    }
+
+    return responseData;
   }
 
   async getSubscription(userId: string): Promise<UserSubscription | null> {
