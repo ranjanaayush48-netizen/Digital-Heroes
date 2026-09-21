@@ -171,7 +171,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     let existingSnap;
     try {
-      console.log(`ONBOARDING STEP 1: users/${user.uid} read`);
+      // Ensure user auth token is fresh and ready
+      const token = await user.getIdToken(false);
+      console.log(`ONBOARDING STEP 1: users/${user.uid} read (auth uid: ${user.uid}, token length: ${token?.length})`);
       existingSnap = await getDoc(userDocRef);
       console.log(`ONBOARDING STEP 1 SUCCESS: Document exists = ${existingSnap.exists()}`);
     } catch (step1Err: any) {
