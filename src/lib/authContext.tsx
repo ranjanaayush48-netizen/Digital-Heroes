@@ -168,7 +168,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const userDocRef = doc(db, 'users', user.uid);
-    const existingSnap = await getDoc(userDocRef);
+    
+    let existingSnap;
+    try {
+      console.log(`ONBOARDING STEP 1: users/${user.uid} read`);
+      existingSnap = await getDoc(userDocRef);
+      console.log(`ONBOARDING STEP 1 SUCCESS: Document exists = ${existingSnap.exists()}`);
+    } catch (step1Err: any) {
+      console.error(`ONBOARDING STEP 1 FAILED:`, step1Err);
+      throw step1Err;
+    }
+
     const existingData = existingSnap.exists() ? (existingSnap.data() as Partial<UserProfile>) : {};
 
     const profileData: UserProfile = {
@@ -185,7 +195,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updatedAt: new Date().toISOString(),
     };
 
-    await setDoc(userDocRef, profileData, { merge: true });
+    try {
+      console.log(`ONBOARDING STEP 2: users/${user.uid} write (doc exists: ${existingSnap.exists()}, payload uid: ${profileData.uid})`);
+      if (existingSnap.exists()) {
+        await setDoc(userDocRef, profileData, { merge: true });
+      } else {
+        await setDoc(userDocRef, profileData);
+      }
+      console.log(`ONBOARDING STEP 2 SUCCESS`);
+    } catch (step2Err: any) {
+      console.error(`ONBOARDING STEP 2 FAILED:`, step2Err);
+      throw step2Err;
+    }
+
     setUserProfile(profileData);
     return profileData;
   };
